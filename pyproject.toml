@@ -1,0 +1,21 @@
+[project]
+name = "intents-desk"
+version = "0.1.0"
+description = "Where's my swap? Open data and an agent for NEAR Intents."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = ["duckdb>=1.1"]
+
+[project.scripts]
+intents-desk = "intents_desk.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 88
