@@ -16,7 +16,7 @@ command next to it.
 
 | Part | State | Check |
 |---|---|---|
-| Fetch recent `intents.near` transactions (nearblocks + NEAR RPC) into DuckDB | works | `make fetch TXNS=100` |
+| Fetch the last N final blocks and keep every `intents.near` receipt (neardata) | works | `make fetch BLOCKS=200` |
 | Parse `EVENT_JSON` logs (dip4, nep245, nep141) into `silver.event` | works | `make stats` |
 | One row per swap side from dip4 `token_diff` (`silver.token_diff`) | works | `make test` |
 | Re-runs change nothing (keyed inserts) | works | `make test` |
@@ -29,7 +29,7 @@ Needs Python 3.12+ and [uv](https://docs.astral.sh/uv/). No API keys.
 
 ```sh
 make test          # unit tests on real recorded transactions
-make fetch TXNS=50 # pull the 50 most recent intents.near transactions
+make fetch BLOCKS=200  # about 2 minutes of chain time; resumable
 make stats         # what the database holds
 ```
 
@@ -37,13 +37,20 @@ make stats         # what the database holds
 
 All public and read-only:
 
-- [nearblocks API](https://api.nearblocks.io): the list of transactions sent to `intents.near`
-- NEAR RPC `EXPERIMENTAL_tx_status`: receipts and event logs
+- [neardata](https://mainnet.neardata.xyz) (FastNEAR): full blocks with receipt outcomes and logs.
+  The free tier allows about 180 requests a minute per IP, so `fetch` waits 0.35 s per block.
+- NEAR RPC `EXPERIMENTAL_tx_status`: one transaction with its receipts (used for test fixtures)
 - [1Click API](https://1click.chaindefuser.com/v0/tokens): token list, prices, swap status
+
+## First sample (2026-11-04)
+
+600 blocks (222977243–222977842, about 6.5 minutes of chain time): 575 transactions,
+1,573 `intents.near` receipts, 1,695 events, 17 swap intents (`token_diff`) across 9 accounts.
 
 ## Layout
 
-- `bronze.tx`: one raw RPC response per transaction, unchanged
+- `bronze.receipt`: one raw `intents.near` receipt outcome, unchanged
+- `bronze.block_seen`: block heights already fetched (makes `fetch` resumable)
 - `silver.event`: one row per event log entry, keyed by (receipt, log, data index)
 - `silver.token_diff`: one row per (intent, token) balance change
 
