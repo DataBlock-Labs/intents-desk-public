@@ -166,6 +166,35 @@ def swap_view(address: str, fmt: str = "json"):
     return " ".join(f"{k}={v}" for k, v in parts.items() if v not in (None, "", "0"))
 
 
+def public_view(data: dict) -> dict:
+    """The parts of a 1Click status that are safe to show for a swap opened by ref:
+    no deposit, recipient or refund address, and no memo."""
+    req = data.get("quoteResponse", {}).get("quoteRequest", {})
+    q = data.get("quoteResponse", {}).get("quote", {})
+    d = data.get("swapDetails", {})
+    keep = lambda src, keys: {k: src[k] for k in keys if k in src}
+    return {
+        "status": data.get("status"),
+        "updatedAt": data.get("updatedAt"),
+        "quoteResponse": {
+            "quoteRequest": keep(
+                req, ("originAsset", "destinationAsset", "depositType")
+            ),
+            "quote": keep(q, ("amountInFormatted", "amountInUsd")),
+        },
+        "swapDetails": keep(
+            d,
+            (
+                "amountOutFormatted",
+                "amountOutUsd",
+                "refundedAmountFormatted",
+                "refundedAmountUsd",
+                "refundReason",
+            ),
+        ),
+    }
+
+
 def swap_again(query: dict) -> tuple[int, dict]:
     """Quote a refunded swap again, with the same route, amount and addresses.
 
@@ -414,8 +443,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/api/swap", "/api/quote"):
             address = q.get("address", [""])[0].strip()
             ref = q.get("ref", [""])[0]
-            if ref and REF.match(ref):  # from the public swaps list
+            if path == "/api/swap" and ref and REF.match(ref):  # from the public list
                 address = store.address_for_ref(db(), ref) or ""
+                if not address:
+                    self.send_json(
+                        404, {"error": "Swap not found (kept for 24 hours)."}
+                    )
+                else:  # reduced view: the reply never contains any address
+                    self.send_json(200, public_view(swap_view(address)))
+                return
             if not ADDRESS.match(address):
                 self.send_json(400, {"error": "Not a valid deposit address."})
             elif path == "/api/quote":

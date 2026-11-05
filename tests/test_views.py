@@ -108,3 +108,29 @@ def test_view_apis_answer(base):
     assert code == 200 and len(rows) == 61  # capped at 200; 61 successes exist
     code, rows = get(base + "/api/swaps?partner=" + urllib.parse.quote("(none)"))
     assert code == 200 and rows == []
+
+
+def test_ref_lookup_reply_has_no_addresses(base, con, monkeypatch, tmp_path):
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "s.key"))
+    from tests.fakes import STATUS
+
+    secret = {
+        **STATUS,
+        "depositAddress": "SECRETDEP0001",
+        "quoteResponse": {
+            **STATUS["quoteResponse"],
+            "quote": {
+                **STATUS["quoteResponse"]["quote"],
+                "depositAddress": "SECRETDEP0001",
+            },
+        },
+    }
+    monkeypatch.setattr(web.sources, "get_swap_status", lambda a, **k: secret)
+    ref = recent_swaps(con, limit=1)[0]["ref"]
+    code, d = get(base + "/api/swap?ref=" + ref)
+    assert code == 200 and d["status"] == "REFUNDED"
+    blob = json.dumps(d)
+    for leaked in ("SECRETDEP0001", "TRefund", "0xabc", "dep0"):
+        assert leaked not in blob
+    assert get(base + "/api/swap?ref=" + "0" * 20)[0] == 404
+    assert get(base + "/api/quote?ref=" + ref)[0] == 400  # quotes need the real address
