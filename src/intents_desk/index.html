@@ -43,7 +43,7 @@
   @media (max-width: 760px) { h2 { flex-wrap: wrap; } h2 .note { flex-basis: 100%; margin-left: 0; min-height: 1.6em; } .pill { order: 3; flex-basis: 100%; min-width: 0; } } /* own row on phones: no reflow when the text loads */
 
   main { max-width: 1200px; margin: 0 auto; padding: 0 var(--s4) var(--s6); }
-  section { border-bottom: 1px solid var(--rule); padding: var(--s5) 0; min-width: 0; }
+  section { border-bottom: 1px solid var(--rule); padding: var(--s5) 0; min-width: 0; scroll-margin-top: 80px; } /* below the sticky header */
   .cols { display: grid; gap: 0 var(--s6); grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
   .cols > * { min-width: 0; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; margin: 0 0 var(--s3); display: flex; gap: var(--s2); align-items: center; color: var(--fg); }
@@ -83,6 +83,11 @@
   .chips { display: flex; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s3); }
   .mine { min-height: 160px; }
   .hidden { display: none; }
+  .filters { display: flex; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
+  .filters label { width: auto; display: flex; gap: var(--s2); align-items: center; }
+  select { min-height: var(--tap); padding: var(--s1) var(--s2); border: 1px solid var(--rule-2); background: var(--bg-2); color: var(--fg); font: 13px var(--mono); }
+  button.addr { min-height: 32px; padding: 0 var(--s2); background: transparent; color: var(--fg); border-color: var(--rule-2); font-weight: 500; }
+  .swaps-wrap { min-height: 420px; }
   footer { max-width: 1200px; margin: 0 auto; padding: var(--s5) var(--s4) var(--s6); color: var(--fg-2); font-size: 12px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -136,6 +141,31 @@
       <div><h2 class="plain">Busiest routes</h2><div class="scroll"><table id="routes"></table></div></div>
       <div><h2 class="plain">Status</h2><table id="status"></table><h2 class="plain mt">Refund reasons</h2><table id="reasons"></table></div>
     </div>
+  </section>
+
+  <section id="partner-view" class="hidden" aria-labelledby="partner-h">
+    <h2 id="partner-h">Partner <span id="partner-name" class="note small"></span></h2>
+    <p id="partner-stats" class="dim small" role="status" aria-atomic="true"></p>
+    <p class="dim small" id="partner-hourly-label">Refunded share of this partner's swaps, per hour (UTC), last 24 hours.</p>
+    <div id="partner-bars" class="bars" role="img" aria-labelledby="partner-hourly-label"></div>
+    <div class="cols mt">
+      <div><h2 class="plain">Routes</h2><div class="scroll"><table id="partner-routes"></table></div></div>
+      <div><h2 class="plain">Refund reasons</h2><table id="partner-reasons"></table><h2 class="plain mt">Status</h2><table id="partner-statuses"></table></div>
+      <div><h2 class="plain">Daily history</h2><div class="scroll"><table id="partner-daily"></table></div>
+        <p class="dim small">Daily numbers are kept as aggregates; raw swap data is kept for 24 hours only.</p></div>
+    </div>
+    <p class="small"><a href="#" id="partner-close">Close partner view</a></p>
+  </section>
+
+  <section aria-labelledby="swaps-h">
+    <h2 id="swaps-h">Recent swaps <span id="swaps-note" class="note dim small"></span></h2>
+    <form id="swap-filters" class="filters">
+      <label for="f-status">Status
+        <select id="f-status"><option value="">All</option><option>SUCCESS</option><option>REFUNDED</option><option>PROCESSING</option><option>PENDING_DEPOSIT</option><option>INCOMPLETE_DEPOSIT</option><option>FAILED</option></select></label>
+      <label for="f-partner">Partner <select id="f-partner"><option value="">All</option></select></label>
+      <label for="f-route">Route <select id="f-route"><option value="">All</option></select></label>
+    </form>
+    <div class="scroll swaps-wrap"><table id="swaps"></table></div>
   </section>
 
   <section aria-labelledby="feed-h">

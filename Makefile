@@ -7,6 +7,8 @@ REFERRAL ?= %:pda
 PORT ?= 8420
 KEYS ?= $(HOME)/.config/intents-desk/oneclick.env
 XENV ?= $(HOME)/.config/last30days/.env
+# Telegram alerts (optional): TELEGRAM_BOT_TOKEN=... from @BotFather. Never commit it.
+TGENV ?= $(HOME)/.config/intents-desk/telegram.env
 
 setup:
 	uv sync
@@ -25,7 +27,7 @@ demo: test fetch stats
 # Loads API keys from $(KEYS) if the file exists. The swap box works without keys.
 # The issue feed also reads X when the X_BEARER_TOKEN line exists in $(XENV).
 serve: setup
-	set -a; [ -f "$(KEYS)" ] && . "$(KEYS)"; set +a; \
+	set -a; [ -f "$(KEYS)" ] && . "$(KEYS)"; [ -f "$(TGENV)" ] && . "$(TGENV)"; set +a; \
 	X_BEARER_TOKEN="$$(grep -s '^X_BEARER_TOKEN=' "$(XENV)" | cut -d= -f2- | tr -d '"')" \
 	uv run intents-desk serve --port $(PORT)
 

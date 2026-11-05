@@ -19,10 +19,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import auth, ops, sources, store
+from . import auth, ops, sources, store, telegram
 
 PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+PARTNER = re.compile(r"^(\(none\)|[A-Za-z0-9._:-]{1,80})$")
+ROUTE = re.compile(r"^[a-z0-9-]{1,20} → [a-z0-9-]{1,20}$")
 ACCOUNT = re.compile(r"^[a-z0-9._-]{2,64}$")
 CACHE_SECONDS = 60
 SYNC_SECONDS = 600
@@ -91,9 +93,7 @@ def chain_of(asset: str) -> str:
         return rest.split("-")[0].split(".")[0]
     if "omni.hot.tg" in rest:
         return "hot-omni"
-    if rest.endswith(".near"):
-        return "near"
-    return rest.split(".")[0]
+    return "near"  # any other token id lives on NEAR (wrap.near, token.sweat, hex ids)
 
 
 def summarize(txs: list[dict]) -> dict:
@@ -199,6 +199,10 @@ def account_view(account: str) -> dict:
         watched.append({"address": address, "line": swap_view(address, "agent")})
     return {
         "account": account,
+        "telegram": {
+            "available": telegram.enabled(),
+            "linked": telegram.linked_chat(cur, account) is not None,
+        },
         "balance_near": round(yocto / 10**24, 4),
         "swaps": store.account_swaps(cur, account),
         "watched": watched,
@@ -256,6 +260,27 @@ def backup_once() -> int:
         if problems:
             raise RuntimeError(f"backup check failed: {problems}")
     return 1
+
+
+ALERT_SECONDS = 120
+
+
+def alerts_once() -> int:
+    cur = db()
+    with ops.audited(cur, PRODUCT, "alerts") as run:
+        run.update(telegram.alerts_once(cur))
+    return run["sent"]
+
+
+def _bot_loop() -> None:
+    """Long-poll Telegram for /start, /status and /stop. Errors never print the token."""
+    offset = 0
+    while True:
+        try:
+            offset = telegram.poll_once(db(), offset)
+        except (telegram.TelegramError, OSError, ValueError, RuntimeError) as exc:
+            print(f"[bot] failed: {exc}", file=sys.stderr, flush=True)
+            time.sleep(10)
 
 
 def _loop(name: str, fn, seconds: int) -> None:
@@ -355,6 +380,30 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/partners":
             rows = store.partner_report(db(), 1, 50, 50).fetchall()
             self.send_json(200, rows[:15])
+        elif path == "/api/partner":
+            partner = q.get("id", [""])[0]
+            if not PARTNER.match(partner):
+                self.send_json(400, {"error": "Not a valid partner id."})
+            else:
+                self.send_json(200, store.partner_detail(db(), partner))
+        elif path == "/api/swaps":
+            status = q.get("status", [None])[0] or None
+            partner = q.get("partner", [None])[0] or None
+            route = q.get("route", [None])[0] or None
+            try:
+                limit = min(max(int(q.get("limit", ["100"])[0]), 1), 200)
+            except ValueError:
+                limit = 100
+            if (
+                (status and status not in store.SWAP_STATUSES)
+                or (partner and not PARTNER.match(partner))
+                or (route and not ROUTE.match(route))
+            ):
+                self.send_json(400, {"error": "Bad filter."})
+            else:
+                self.send_json(
+                    200, store.recent_swaps(db(), status, partner, route, limit)
+                )
         elif path == "/api/hourly":
             self.send_json(200, store.hourly_refunds(db(), 24))
         elif path == "/api/feed":
@@ -423,6 +472,19 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/auth/logout":
             cookie = "session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
             self.send_json(200, {"ok": True}, Set_Cookie=cookie)
+        elif path in ("/api/me/telegram", "/api/me/telegram/unlink"):
+            account = self.account()
+            if not account:
+                self.send_json(401, {"error": "Not signed in."})
+            elif not telegram.enabled():
+                self.send_json(
+                    503, {"error": "Telegram alerts are not set up on this server."}
+                )
+            elif path.endswith("unlink"):
+                db().execute("DELETE FROM app.telegram WHERE account_id = ?", [account])
+                self.send_json(200, {"linked": False})
+            else:
+                self.send_json(200, {"link": telegram.new_link(db(), account)})
         elif path == "/api/me/watch":
             account = self.account()
             address = str(body.get("address", "")).strip()
@@ -450,6 +512,11 @@ def serve(
     threading.Thread(
         target=_loop, args=("feed", feed_once, FEED_SECONDS), daemon=True
     ).start()
+    if telegram.enabled():
+        threading.Thread(target=_bot_loop, daemon=True).start()
+        threading.Thread(
+            target=_loop, args=("alerts", alerts_once, ALERT_SECONDS), daemon=True
+        ).start()
     if os.environ.get("BACKUP_DIR") or os.environ.get("BACKUP_PUSH"):
         threading.Thread(
             target=_loop, args=("backup", backup_once, BACKUP_SECONDS), daemon=True

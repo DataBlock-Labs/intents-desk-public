@@ -179,6 +179,19 @@ keeping them.
   checked by `make ui-check`.
 - One project per submission; no other project is entered under this name.
 
+## Partner view, recent swaps and Telegram alerts
+
+- **Partner view** (`/#partner=<id>`, or click a partner): swaps and refund rate in the last
+  24 h, refund % per hour, routes, refund reasons, status mix, and daily history from the
+  aggregate tables. Public, aggregates only.
+- **Recent swaps:** the newest 100 swaps, filterable by status, partner and route; click a
+  deposit address to look the swap up.
+- **Telegram alerts** (after wallet sign-in): press Connect Telegram, open the one-time link
+  (10 minutes, single use) and press Start. The bot sends one message when a watched swap
+  changes status (at most 20 watched swaps per account). In Telegram: `/status` lists your
+  watched swaps, `/stop` unlinks. To enable on a server, create a bot with @BotFather and set
+  `TELEGRAM_BOT_TOKEN` (`make serve` reads `~/.config/intents-desk/telegram.env`).
+
 ## Operations audit
 
 Every job (sync, feed, fetch, rollup, thesis, backup) writes a row to `ops.run_log`: start,

@@ -5,8 +5,7 @@ CREATE OR REPLACE TEMP MACRO chain(a) AS (
         WHEN regexp_replace(a, '^[^:]*:', '') LIKE '%.omft.near'
             THEN split_part(split_part(regexp_replace(a, '^[^:]*:', ''), '-', 1), '.', 1)
         WHEN a LIKE '%omni.hot.tg%' THEN 'hot-omni'
-        WHEN a LIKE '%.near' THEN 'near'
-        ELSE split_part(regexp_replace(a, '^[^:]*:', ''), '.', 1)
+        ELSE 'near'  -- any other token id lives on NEAR
     END
 );
 -- Incident partners: wallet-widget referral ids of one partner that end in ':pda'.

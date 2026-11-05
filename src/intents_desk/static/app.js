@@ -6,7 +6,7 @@ const fmt = (n) => Number(n).toLocaleString("en-US");
 const usd = (n) => n == null || n === "" ? "–" : "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
 const ago = (s) => { const m = Math.round((Date.now() - new Date(s)) / 60000); return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
 const chain = (a) => { if (!a) return "–"; if (a.startsWith("1cs_v1:")) return a.split(":")[1]; const r = a.split(":").slice(1).join(":");
-  if (r.endsWith(".omft.near")) return r.split("-")[0].split(".")[0]; if (r.includes("omni.hot.tg")) return "hot-omni"; if (r.endsWith(".near")) return "near"; return r.split(".")[0]; };
+  if (r.endsWith(".omft.near")) return r.split("-")[0].split(".")[0]; if (r.includes("omni.hot.tg")) return "hot-omni"; return "near"; };
 const statusCell = (td, s) => { td.textContent = s; if (/^[A-Z_]+$/.test(s)) td.classList.add("s-" + s); };
 const getJSON = async (url, opts) => { const r = await fetch(url, opts); const d = await r.json().catch(() => ({})); return [r.ok, d]; };
 const post = (url, body) => getJSON(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -83,7 +83,8 @@ async function loadHealth() {
   table($("routes"), [["From → to"], ["Swaps", 1], ["Refunded", 1]], d.routes.map(([r, c, p]) => [r, fmt(c), p + "%"]));
   const [, parts] = await getJSON("/api/partners");
   table($("partners"), [["Partner"], ["Swaps", 1], ["Refunded", 1], ["Lost $", 1]], (parts || []).map((p) => [p, p[1], p[2], p[3]]), (td, v, i, row) => {
-    if (i === 0) { const p = row[0]; if (p[7]) td.append(el("span", "ALERT", "alert"), " "); td.append(el("span", p[0].length > 34 ? p[0].slice(0, 32) + "…" : p[0], "mono small")); td.title = p[0]; }
+    if (i === 0) { const p = row[0]; if (p[7]) td.append(el("span", "ALERT", "alert"), " ");
+      const a = el("a", p[0].length > 34 ? p[0].slice(0, 32) + "…" : p[0], "small"); a.href = "#partner=" + encodeURIComponent(p[0]); a.title = "Open the partner view for " + p[0]; td.append(a); }
     else td.textContent = i === 1 ? fmt(v) : i === 2 ? v + "%" : usd(v);
   });
   const [, hours] = await getJSON("/api/hourly");
@@ -91,7 +92,58 @@ async function loadHealth() {
   if (hours?.length) { const f = hours[0], l = hours[hours.length - 1];
     $("bars-axis").replaceChildren(el("span", `${f[0].slice(11, 16)} UTC: ${f[2]}%`), el("span", `bar height = % refunded (0–100)`), el("span", `${l[0].slice(11, 16)} UTC: ${l[2]}%`)); }
   table($("hourly"), [["Hour (UTC)"], ["Swaps", 1], ["Refunded", 1]], (hours || []).map(([h, n, p]) => [h, fmt(n), p + "%"]));
+  fillSelect($("f-partner"), (parts || []).map((p) => p[0]));
+  fillSelect($("f-route"), d.routes.map(([r]) => r));
 }
+
+function fillSelect(sel, values) {
+  const keep = sel.value;
+  sel.replaceChildren(el("option", "All"), ...values.map((v) => el("option", v)));
+  sel.options[0].value = "";
+  if (values.includes(keep)) sel.value = keep;
+}
+
+// ---------- Partner view (#partner=<id>) ----------
+async function showPartner() {
+  const m = location.hash.match(/^#partner=(.+)$/), box = $("partner-view");
+  if (!m) { box.classList.add("hidden"); return; }
+  const id = decodeURIComponent(m[1]);
+  const [ok, d] = await getJSON("/api/partner?id=" + encodeURIComponent(id));
+  box.classList.remove("hidden");
+  $("partner-name").textContent = id;
+  if (!ok) { $("partner-stats").textContent = d.error || "Partner not found."; return; }
+  $("partner-stats").textContent = d.swaps_24h
+    ? `${fmt(d.swaps_24h)} swaps in the last 24 h · ${d.refund_pct_24h}% refunded · ${usd(d.refunded_usd_24h)} refunded (counted across retries)`
+    : "No swaps from this partner in the last 24 hours.";
+  $("partner-bars").replaceChildren(...d.hourly.map(([h, n, p]) => { const b = el("span"); b.style.height = Math.max(p, 2) + "%"; b.title = `${h}: ${p}% of ${fmt(n)} swaps refunded`; return b; }));
+  table($("partner-routes"), [["From → to"], ["Swaps", 1], ["Refunded", 1]], d.routes.map(([r, n, p]) => [r, fmt(n), p + "%"]));
+  table($("partner-reasons"), [["Reason"], ["Refunds", 1]], d.reasons.map(([r, n]) => [r, fmt(n)]));
+  table($("partner-statuses"), [["Status"], ["Swaps", 1]], d.statuses.map(([s, n]) => [s, fmt(n)]), (td, v, i) => i === 0 ? statusCell(td, v) : (td.textContent = v));
+  table($("partner-daily"), [["Day (UTC)"], ["Swaps", 1], ["Refunded", 1], ["Refunded $", 1]], d.daily.map(([day, n, p, u]) => [day, fmt(n), (p ?? 0) + "%", usd(u)]));
+  $("f-partner").value = id; loadSwaps();
+  box.scrollIntoView({ block: "start" });
+}
+window.addEventListener("hashchange", showPartner);
+$("partner-close").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showPartner(); });
+
+// ---------- Recent swaps ----------
+async function loadSwaps() {
+  const q = new URLSearchParams({ limit: "100" });
+  for (const [k, id] of [["status", "f-status"], ["partner", "f-partner"], ["route", "f-route"]]) if ($(id).value) q.set(k, $(id).value);
+  const [ok, rows] = await getJSON("/api/swaps?" + q);
+  if (!ok) { $("swaps-note").textContent = rows.error || "Swaps unavailable"; return; }
+  $("swaps-note").textContent = `${rows.length} newest` + (q.size > 1 ? " (filtered)" : "");
+  table($("swaps"), [["When"], ["Status"], ["Route"], ["In $", 1], ["Partner"], ["Reason"], ["Deposit address"]],
+    rows.map((s) => [new Date(s.created_at).toLocaleTimeString(), s.status, s.route, usd(s.usd_in), s.partner.length > 24 ? s.partner.slice(0, 22) + "…" : s.partner, s.reason || "", s.address]),
+    (td, v, i) => {
+      if (i === 1) statusCell(td, v);
+      else if (i === 6) { const b = el("button", v.length > 14 ? v.slice(0, 6) + "…" + v.slice(-4) : v, "addr"); b.type = "button"; b.title = "Check this swap";
+        b.setAttribute("aria-label", "Check swap " + v);
+        b.addEventListener("click", () => { $("addr").value = v; $("lookup").requestSubmit(); $("lookup-h").scrollIntoView(); }); td.append(b); }
+      else td.textContent = v;
+    });
+}
+for (const id of ["f-status", "f-partner", "f-route"]) $(id).addEventListener("change", loadSwaps);
 
 // ---------- Feed ----------
 async function loadFeed(tag = "") {
@@ -130,6 +182,7 @@ async function loadMine() {
   showAccount(d.account);
   const out = $("mine-out"); out.replaceChildren();
   const dl = el("dl"); dl.append(el("dt", "Account"), el("dd", d.account), el("dt", "Balance"), el("dd", `${d.balance_near} NEAR`)); out.append(dl);
+  out.append(telegramRow(d.telegram));
   out.append(el("h2", "Watched swaps"));
   if (!d.watched.length) out.append(el("p", "None yet. Check a swap, then press Watch.", "dim small"));
   for (const w of d.watched) { const p = el("p", null, "mono small"); p.append(el("strong", w.address.slice(0, 12) + "… "), w.line); p.append(" ", watchButton(w.address, false)); out.append(p); }
@@ -137,6 +190,26 @@ async function loadMine() {
   if (!d.swaps.length) { out.append(el("p", "No swaps found for this account in the stored data.", "dim small")); return; }
   const t = el("table"), wrap = el("div", null, "scroll"); wrap.append(t); out.append(wrap);
   table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["Reason"]], d.swaps.map((s) => [new Date(s[1]).toLocaleString(), s[2], `${chain(s[3])} → ${chain(s[4])}`, usd(s[5]), s[6] || ""]), (td, v, i) => i === 1 ? statusCell(td, v) : (td.textContent = v));
+}
+
+function telegramRow(tg) {
+  const p = el("p", null, "small");
+  if (!tg?.available) { p.append(el("span", "Telegram alerts are not set up on this server.", "dim")); return p; }
+  if (tg.linked) {
+    const b = el("button", "Disconnect", "ghost"); b.type = "button";
+    b.addEventListener("click", async () => { await post("/api/me/telegram/unlink", {}); loadMine(); });
+    p.append("Telegram alerts: on. You get a message when a watched swap changes. ", b);
+    return p;
+  }
+  const b = el("button", "Connect Telegram"); b.type = "button";
+  b.addEventListener("click", async () => {
+    b.disabled = true; const [ok, r] = await post("/api/me/telegram", {}); b.disabled = false;
+    if (!ok) { p.append(" ", el("span", r.error || "Could not make a link.", "dim")); return; }
+    const a = el("a", "Open Telegram and press Start"); a.href = r.link; a.target = "_blank"; a.rel = "noopener noreferrer";
+    p.replaceChildren(a, el("span", " (link works once, for 10 minutes; then reload this page)", "dim"));
+  });
+  p.append("Get a Telegram message when a watched swap changes. ", b);
+  return p;
 }
 
 function watchButton(address, on = true) {
@@ -173,3 +246,6 @@ loadHealth().catch((e) => { $("pill").textContent = "Could not load: " + e; });
 loadFeed();
 loadMine();
 setInterval(loadHealth, 60000);
+loadSwaps();
+setInterval(loadSwaps, 60000);
+showPartner();

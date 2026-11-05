@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS app.watch (
     added_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (account_id, deposit_address)
 );
+ALTER TABLE app.watch ADD COLUMN IF NOT EXISTS last_status TEXT;
+CREATE TABLE IF NOT EXISTS app.telegram (
+    account_id TEXT PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    linked_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS app.link_code (
+    code TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
 CREATE TABLE IF NOT EXISTS bronze.receipt (
     receipt_id TEXT PRIMARY KEY,
     tx_hash TEXT,
@@ -414,8 +425,16 @@ def watch_list(con, account: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+MAX_WATCHED = 20
+
+
 def set_watch(con, account: str, address: str, on: bool) -> None:
     if on:
+        n = con.execute(
+            "SELECT count(*) FROM app.watch WHERE account_id = ?", [account]
+        ).fetchone()[0]
+        if n >= MAX_WATCHED:
+            raise ValueError(f"You can watch at most {MAX_WATCHED} swaps.")
         con.execute(
             "INSERT OR IGNORE INTO app.watch (account_id, deposit_address)"
             " VALUES (?, ?)",
@@ -450,3 +469,91 @@ def save_fill(con, address: str, created_at: str, updated_at: str) -> None:
         " epoch($u::TIMESTAMPTZ - $c::TIMESTAMPTZ))",
         {"a": address, "c": created_at, "u": updated_at},
     )
+
+
+SWAP_STATUSES = (
+    "SUCCESS",
+    "REFUNDED",
+    "PROCESSING",
+    "PENDING_DEPOSIT",
+    "INCOMPLETE_DEPOSIT",
+    "FAILED",
+)
+
+
+def _route_macro(con) -> None:
+    from .ops import CHAIN_MACRO
+
+    con.execute(CHAIN_MACRO)
+
+
+def partner_detail(con, partner: str) -> dict:
+    """Everything the partner view shows: last-24 h figures (raw window) and daily history
+    (aggregates in ops.daily_swap_summary). Referral '(none)' means swaps with no referral."""
+    _route_macro(con)
+    where = "coalesce(nullif(referral, ''), '(none)') = $p"
+    q = lambda sql: con.execute(sql, {"p": partner}).fetchall()
+    [(swaps, refund_pct, refunded, first, last)] = q(
+        f"""SELECT count(*), round(100 * avg((status = 'REFUNDED')::INT), 1),
+            round(sum(amount_in_usd) FILTER (WHERE status = 'REFUNDED')),
+            CAST(min(created_at) AS VARCHAR), CAST(max(created_at) AS VARCHAR)
+        FROM silver.swap WHERE {where}"""
+    )
+    return {
+        "partner": partner,
+        "swaps_24h": swaps,
+        "refund_pct_24h": refund_pct,
+        "refunded_usd_24h": refunded,
+        "first": first,
+        "last": last,
+        "hourly": q(
+            f"""SELECT strftime(date_trunc('hour', created_at) AT TIME ZONE 'UTC',
+                '%Y-%m-%dT%H:00Z'), count(*)::INT,
+                round(100 * avg((status = 'REFUNDED')::INT), 1)
+            FROM silver.swap WHERE {where} GROUP BY 1 ORDER BY 1"""
+        ),
+        "daily": q(
+            """SELECT CAST(day AS VARCHAR), sum(swaps)::INT,
+                round(100.0 * sum(swaps) FILTER (WHERE status = 'REFUNDED') / sum(swaps), 1),
+                round(sum(refunded_usd))
+            FROM ops.daily_swap_summary WHERE partner = $p
+            GROUP BY day ORDER BY day DESC LIMIT 30"""
+        ),
+        "routes": q(
+            f"""SELECT ops_chain(origin_asset) || ' → ' || ops_chain(destination_asset),
+                count(*)::INT, round(100 * avg((status = 'REFUNDED')::INT), 1)
+            FROM silver.swap WHERE {where} GROUP BY 1 ORDER BY 2 DESC LIMIT 10"""
+        ),
+        "reasons": q(
+            f"""SELECT coalesce(refund_reason, 'not given'), count(*)::INT
+            FROM silver.swap WHERE {where} AND status = 'REFUNDED'
+            GROUP BY 1 ORDER BY 2 DESC"""
+        ),
+        "statuses": q(
+            f"""SELECT status, count(*)::INT FROM silver.swap WHERE {where}
+            GROUP BY 1 ORDER BY 2 DESC"""
+        ),
+    }
+
+
+def recent_swaps(
+    con, status=None, partner=None, route=None, limit: int = 100
+) -> list[dict]:
+    """The newest swaps, optionally filtered. Values are bound as parameters."""
+    _route_macro(con)
+    rows = con.execute(
+        """
+        SELECT deposit_address, CAST(created_at AS VARCHAR), status,
+            ops_chain(origin_asset) || ' → ' || ops_chain(destination_asset) AS route,
+            amount_in_usd, coalesce(nullif(referral, ''), '(none)') AS partner, refund_reason
+        FROM silver.swap
+        WHERE ($s IS NULL OR status = $s)
+            AND ($p IS NULL OR coalesce(nullif(referral, ''), '(none)') = $p)
+            AND ($r IS NULL OR ops_chain(origin_asset) || ' → '
+                || ops_chain(destination_asset) = $r)
+        ORDER BY created_at DESC LIMIT $n
+        """,
+        {"s": status, "p": partner, "r": route, "n": limit},
+    ).fetchall()
+    keys = ("address", "created_at", "status", "route", "usd_in", "partner", "reason")
+    return [dict(zip(keys, r, strict=True)) for r in rows]

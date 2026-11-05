@@ -21,6 +21,9 @@ def test_chain_of():
     assert chain_of("nep141:wrap.near") == "near"
     assert chain_of("nep245:v2_1.omni.hot.tg:4444119_wyixUKCL") == "hot-omni"
     assert chain_of("1cs_v1:btc:native:coin") == "btc"
+    assert chain_of("nep141:token.sweat") == "near"
+    hexid = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+    assert chain_of(hexid) == "near"
 
 
 def test_summarize_counts_refunds_per_route():

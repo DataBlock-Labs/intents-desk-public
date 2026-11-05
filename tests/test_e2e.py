@@ -210,3 +210,32 @@ def test_real_wallet_picker_opens(app, page):
     page.click("#connect")
     expect(page.get_by_text("Select wallet")).to_be_visible(timeout=15000)
     assert page.evaluate("window.__csp || []") == []
+
+
+def test_partner_view_and_recent_swaps(app, page):
+    url, faked = app
+    if not faked:
+        pytest.skip("needs the fake partners")
+    open_page(page, url)
+    page.locator("#partners a", has_text="widget-x:pda").click()
+    expect(page.locator("#partner-view")).to_be_visible()
+    expect(page.locator("#partner-stats")).to_contain_text(
+        "60 swaps in the last 24 h · 100% refunded"
+    )
+    expect(page.locator("#partner-reasons")).to_contain_text("INTENT_SUBMIT_FAILED")
+    expect(page.locator("#swaps")).to_contain_text(
+        "widget-x:pda"
+    )  # filter follows the view
+    page.select_option("#f-status", "SUCCESS")
+    page.select_option("#f-partner", "")
+    expect(page.locator("#swaps")).not_to_contain_text("REFUNDED")
+    first = page.locator("#swaps button.addr").first
+    full = first.get_attribute("aria-label").removeprefix("Check swap ")
+    first.click()
+    expect(page.locator("#addr")).to_have_value(full)  # the row filled the lookup ...
+    expect(page.locator("#swap")).to_contain_text(
+        "not found"
+    )  # ... and ran it (fake 1Click)
+    page.click("#partner-close")
+    expect(page.locator("#partner-view")).to_be_hidden()
+    assert page.evaluate("window.__csp || []") == []
