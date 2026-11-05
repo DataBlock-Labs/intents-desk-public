@@ -25,6 +25,7 @@ PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 PARTNER = re.compile(r"^(\(none\)|[A-Za-z0-9._:-]{1,80})$")
 ROUTE = re.compile(r"^[a-z0-9-]{1,20} → [a-z0-9-]{1,20}$")
+REF = re.compile(r"^[0-9a-f]{20}$")
 ACCOUNT = re.compile(r"^[a-z0-9._-]{2,64}$")
 CACHE_SECONDS = 60
 SYNC_SECONDS = 600
@@ -412,6 +413,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"posts": store.read_feed(db(), tag), **_status})
         elif path in ("/api/swap", "/api/quote"):
             address = q.get("address", [""])[0].strip()
+            ref = q.get("ref", [""])[0]
+            if ref and REF.match(ref):  # from the public swaps list
+                address = store.address_for_ref(db(), ref) or ""
             if not ADDRESS.match(address):
                 self.send_json(400, {"error": "Not a valid deposit address."})
             elif path == "/api/quote":

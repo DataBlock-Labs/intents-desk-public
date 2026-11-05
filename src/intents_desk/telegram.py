@@ -141,18 +141,27 @@ def alerts_once(con) -> dict:
     """Check watched swaps of linked accounts; message each status change once.
 
     The first check of a newly watched swap only records its status (no message).
+    Finished swaps (SUCCESS, REFUNDED, FAILED) are not checked again; the rest rotate
+    by last check time, so no watched swap waits forever behind others.
     """
     rows = con.execute(
         """
         SELECT w.account_id, w.deposit_address, w.last_status, t.chat_id
         FROM app.watch w JOIN app.telegram t USING (account_id)
-        ORDER BY w.added_at LIMIT ?
+        WHERE coalesce(w.last_status, '') NOT IN ('SUCCESS', 'REFUNDED', 'FAILED')
+        ORDER BY w.last_checked_at NULLS FIRST, w.added_at  -- oldest check first
+        LIMIT ?
         """,
         [MAX_CHECKS_PER_RUN],
     ).fetchall()
     sent = changed = 0
     for account, address, last, chat_id in rows:
         status = sources.get_swap_status(address, retries=1)
+        con.execute(
+            "UPDATE app.watch SET last_checked_at = now()"
+            " WHERE account_id = ? AND deposit_address = ?",
+            [account, address],
+        )
         now = status.get("status")
         if not now or now == last:
             continue

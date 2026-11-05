@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS app.watch (
     PRIMARY KEY (account_id, deposit_address)
 );
 ALTER TABLE app.watch ADD COLUMN IF NOT EXISTS last_status TEXT;
+ALTER TABLE app.watch ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS app.telegram (
     account_id TEXT PRIMARY KEY,
     chat_id BIGINT NOT NULL,
@@ -536,14 +537,25 @@ def partner_detail(con, partner: str) -> dict:
     }
 
 
+def _ref_secret() -> str:
+    from .auth import _session_key
+
+    return _session_key().hex()
+
+
 def recent_swaps(
     con, status=None, partner=None, route=None, limit: int = 100
 ) -> list[dict]:
-    """The newest swaps, optionally filtered. Values are bound as parameters."""
+    """The newest swaps, optionally filtered. Values are bound as parameters.
+
+    The public list never contains a full deposit address: only a short form and an
+    opaque `ref` (keyed hash) that `address_for_ref` can turn back into the address.
+    """
     _route_macro(con)
     rows = con.execute(
         """
-        SELECT deposit_address, CAST(created_at AS VARCHAR), status,
+        SELECT left(deposit_address, 6) || '…' || right(deposit_address, 4),
+            left(md5($k || deposit_address), 20), CAST(created_at AS VARCHAR), status,
             ops_chain(origin_asset) || ' → ' || ops_chain(destination_asset) AS route,
             amount_in_usd, coalesce(nullif(referral, ''), '(none)') AS partner, refund_reason
         FROM silver.swap
@@ -553,7 +565,26 @@ def recent_swaps(
                 || ops_chain(destination_asset) = $r)
         ORDER BY created_at DESC LIMIT $n
         """,
-        {"s": status, "p": partner, "r": route, "n": limit},
+        {"s": status, "p": partner, "r": route, "n": limit, "k": _ref_secret()},
     ).fetchall()
-    keys = ("address", "created_at", "status", "route", "usd_in", "partner", "reason")
+    keys = (
+        "short",
+        "ref",
+        "created_at",
+        "status",
+        "route",
+        "usd_in",
+        "partner",
+        "reason",
+    )
     return [dict(zip(keys, r, strict=True)) for r in rows]
+
+
+def address_for_ref(con, ref: str) -> str | None:
+    """Find the deposit address behind a public `ref` (only swaps still stored, <= 24 h)."""
+    row = con.execute(
+        "SELECT deposit_address FROM bronze.explorer_tx"
+        " WHERE left(md5($k || deposit_address), 20) = $r LIMIT 1",
+        {"k": _ref_secret(), "r": ref},
+    ).fetchone()
+    return row[0] if row else None

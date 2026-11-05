@@ -143,3 +143,32 @@ def test_watch_limit(con):
         store.set_watch(con, "bob.near", f"addr{i:04d}xxxx", True)
     with pytest.raises(ValueError, match="at most"):
         store.set_watch(con, "bob.near", "one-more-xxxx", True)
+
+
+def test_finished_swaps_stop_being_checked_and_others_rotate(con, tg, monkeypatch):
+    checked = []
+
+    def status(a, **k):
+        checked.append(a)
+        return {"status": "SUCCESS" if a.startswith("done") else "PROCESSING"}
+
+    monkeypatch.setattr(sources, "get_swap_status", status)
+    monkeypatch.setattr(telegram, "MAX_CHECKS_PER_RUN", 3)
+    start(con, 42, "/start " + code_of(telegram.new_link(con, "alice.near")))
+    for a in (
+        "done0001xxxx",
+        "wait0001xxxx",
+        "wait0002xxxx",
+        "wait0003xxxx",
+        "wait0004xxxx",
+    ):
+        store.set_watch(con, "alice.near", a, True)
+    for _ in range(3):
+        telegram.alerts_once(con)
+    assert checked.count("done0001xxxx") == 1  # finished: never checked again
+    assert {a for a in checked if a.startswith("wait")} == {
+        "wait0001xxxx",
+        "wait0002xxxx",
+        "wait0003xxxx",
+        "wait0004xxxx",
+    }  # every open swap got a turn

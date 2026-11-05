@@ -33,8 +33,13 @@ $("lookup").addEventListener("submit", async (e) => {
   const address = $("addr").value.trim(), out = $("swap");
   out.textContent = "Checking…";
   const [ok, d] = await getJSON("/api/swap?address=" + encodeURIComponent(address));
-  out.replaceChildren();
-  if (!ok || !d.status) { out.append(el("p", d.error || d.message || "1Click does not know this address.", "dim")); return; }
+  if (!ok || !d.status) { out.replaceChildren(el("p", d.error || d.message || "1Click does not know this address.", "dim")); return; }
+  renderSwap(d, address);
+});
+
+// Show one swap. `address` is null for swaps opened from the public list (no watch/quote).
+function renderSwap(d, address) {
+  const out = $("swap"); out.replaceChildren();
   const q = d.quoteResponse?.quote ?? {}, r = d.quoteResponse?.quoteRequest ?? {}, s = d.swapDetails ?? {};
   const dl = el("dl");
   [["Status", d.status], ["Route", `${chain(r.originAsset)} → ${chain(r.destinationAsset)}`],
@@ -44,9 +49,9 @@ $("lookup").addEventListener("submit", async (e) => {
    ["Reason", s.refundReason || "–"], ["Last update", d.updatedAt ? new Date(d.updatedAt).toLocaleString() : "–"],
   ].forEach(([k, v]) => { const dd = el("dd"); k === "Status" ? statusCell(dd, v) : (dd.textContent = v); dl.append(el("dt", k), dd); });
   out.append(dl, el("p", NEXT[d.status] || "", "next"));
-  if (me) out.append(watchButton(address));
-  if (d.status === "REFUNDED" && r.depositType === "ORIGIN_CHAIN") out.append(swapAgain(address));
-});
+  if (me && address) out.append(watchButton(address));
+  if (address && d.status === "REFUNDED" && r.depositType === "ORIGIN_CHAIN") out.append(swapAgain(address));
+}
 
 function swapAgain(address) {
   const box = el("div", null, "card"); box.style.marginTop = "var(--s3)";
@@ -134,16 +139,25 @@ async function loadSwaps() {
   if (!ok) { $("swaps-note").textContent = rows.error || "Swaps unavailable"; return; }
   $("swaps-note").textContent = `${rows.length} newest` + (q.size > 1 ? " (filtered)" : "");
   table($("swaps"), [["When"], ["Status"], ["Route"], ["In $", 1], ["Partner"], ["Reason"], ["Deposit address"]],
-    rows.map((s) => [new Date(s.created_at).toLocaleTimeString(), s.status, s.route, usd(s.usd_in), s.partner.length > 24 ? s.partner.slice(0, 22) + "…" : s.partner, s.reason || "", s.address]),
+    rows.map((s) => [new Date(s.created_at).toLocaleTimeString(), s.status, s.route, usd(s.usd_in), s.partner.length > 24 ? s.partner.slice(0, 22) + "…" : s.partner, s.reason || "", s]),
     (td, v, i) => {
       if (i === 1) statusCell(td, v);
-      else if (i === 6) { const b = el("button", v.length > 14 ? v.slice(0, 6) + "…" + v.slice(-4) : v, "addr"); b.type = "button"; b.title = "Check this swap";
-        b.setAttribute("aria-label", "Check swap " + v);
-        b.addEventListener("click", () => { $("addr").value = v; $("lookup").requestSubmit(); $("lookup-h").scrollIntoView(); }); td.append(b); }
+      else if (i === 6) { const b = el("button", v.short, "addr"); b.type = "button"; b.title = "Check this swap";
+        b.setAttribute("aria-label", "Check swap " + v.short);
+        b.addEventListener("click", () => lookupRef(v.ref, v.short)); td.append(b); }
       else td.textContent = v;
     });
 }
 for (const id of ["f-status", "f-partner", "f-route"]) $(id).addEventListener("change", loadSwaps);
+
+// A swap from the public list: the page never gets its full address, only a ref.
+async function lookupRef(ref, short) {
+  $("addr").value = ""; $("lookup-h").scrollIntoView();
+  const out = $("swap"); out.replaceChildren(el("p", `Checking ${short}…`, "dim"));
+  const [ok, d] = await getJSON("/api/swap?ref=" + encodeURIComponent(ref));
+  if (!ok || !d.status) { out.replaceChildren(el("p", d.error || d.message || `1Click does not know swap ${short}.`, "dim")); return; }
+  renderSwap(d, null);
+}
 
 // ---------- Feed ----------
 async function loadFeed(tag = "") {

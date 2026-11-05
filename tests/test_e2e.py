@@ -229,13 +229,9 @@ def test_partner_view_and_recent_swaps(app, page):
     page.select_option("#f-status", "SUCCESS")
     page.select_option("#f-partner", "")
     expect(page.locator("#swaps")).not_to_contain_text("REFUNDED")
-    first = page.locator("#swaps button.addr").first
-    full = first.get_attribute("aria-label").removeprefix("Check swap ")
-    first.click()
-    expect(page.locator("#addr")).to_have_value(full)  # the row filled the lookup ...
-    expect(page.locator("#swap")).to_contain_text(
-        "not found"
-    )  # ... and ran it (fake 1Click)
+    page.locator("#swaps button.addr").first.click()
+    expect(page.locator("#swap")).to_contain_text("not found")  # by ref (fake 1Click)
+    assert page.locator("#addr").input_value() == ""  # the page never held the address
     page.click("#partner-close")
     expect(page.locator("#partner-view")).to_be_hidden()
     assert page.evaluate("window.__csp || []") == []

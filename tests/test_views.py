@@ -56,6 +56,20 @@ def test_recent_swaps_filters(con):
     assert times == sorted(times, reverse=True)
 
 
+def test_public_list_has_no_full_address_but_ref_resolves(con, tmp_path, monkeypatch):
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "s.key"))
+    from intents_desk.store import address_for_ref
+
+    rows = recent_swaps(con, limit=200)
+    full = {
+        a for (a,) in con.execute("SELECT deposit_address FROM silver.swap").fetchall()
+    }
+    blob = json.dumps(rows)
+    assert not any(a in blob for a in full)  # no full address anywhere in the response
+    assert address_for_ref(con, rows[0]["ref"]) in full
+    assert address_for_ref(con, "0" * 20) is None
+
+
 @pytest.fixture
 def base(con, monkeypatch):
     monkeypatch.setattr(web, "_db", {"con": con})
