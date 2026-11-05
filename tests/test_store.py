@@ -96,3 +96,14 @@ def test_partner_report_flags_a_failing_partner(tmp_path):
     assert rows["widget:pda"][2] == 100.0 and rows["widget:pda"][-1] is True
     assert rows["partner-b"][-1] is False
     assert rows["widget:pda"][5] == "INTENT_SUBMIT_FAILED"
+
+
+def test_block_time_is_stored_as_utc_whatever_the_local_zone(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    con.execute("SET TimeZone = 'America/New_York'")
+    load_block(con, load("block_intents.json"))
+    ns = load("block_intents.json")["block"]["header"]["timestamp"]
+    [(stored,)] = con.execute(
+        "SELECT DISTINCT epoch(block_ts) FROM silver.event"
+    ).fetchall()
+    assert abs(stored - int(ns) / 1e9) < 1  # not 5 hours off

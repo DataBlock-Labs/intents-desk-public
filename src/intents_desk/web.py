@@ -124,14 +124,15 @@ def summarize(txs: list[dict]) -> dict:
 def get_summary() -> dict:
     """Get the summary of the newest 1,000 swaps, cached for CACHE_SECONDS.
 
-    It reads the local database. With an empty database (a fresh clone), it calls
-    the Explorer API once instead.
+    It reads the local database. With an empty database it calls the Explorer API once
+    if a key is set; with neither, it returns an empty summary.
     """
     with _lock:
         if _cache["data"] is None or time.time() - _cache["at"] > CACHE_SECONDS:
-            txs = store.newest_raw_swaps(db()) or sources.get_explorer_txs(
-                numberOfTransactions=1000
-            )
+            txs = store.newest_raw_swaps(db())
+            if not txs and os.environ.get("INTENTS_EXPLORER_JWT"):
+                txs = sources.get_explorer_txs(numberOfTransactions=1000)
+            # No data and no key (a fresh clone): an empty summary, not an error.
             _cache.update(at=time.time(), data=summarize(txs))
         return _cache["data"]
 
@@ -212,6 +213,8 @@ def sync_once() -> int:
     start = sync_start(store.newest_swap_time(cur), datetime.now(UTC))
     for page in sources.iter_explorer_since(start):
         n += store.load_explorer_txs(cur, page)
+    store.purge_api_data(cur)  # 1Click API terms 4.1(e): keep API data at most 24 h
+    _cache.update(at=0.0, data=None)  # show the new data at once, not after 60 s
     _status["synced_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     return n
 
@@ -339,10 +342,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, auth.new_challenge())
         elif path == "/api/me":
             account = self.account()
-            if account:
-                self.send_json(200, account_view(account))
-            else:
-                self.send_json(401, {"error": "Not signed in."})
+            # Signed out is a normal state, not an error: 200 with account null.
+            self.send_json(200, account_view(account) if account else {"account": None})
         else:
             self.send_json(404, {"error": "Not found."})
 

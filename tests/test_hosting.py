@@ -54,3 +54,29 @@ def test_deposit_addresses_need_swap_live(monkeypatch):
     q["dry"] = ["1"]
     monkeypatch.delenv("SWAP_LIVE")
     assert web.swap_again(q)[0] == 200  # previews always work
+
+
+def test_api_data_older_than_24_hours_is_purged(tmp_path):
+    from intents_desk.store import purge_api_data
+
+    con = connect(tmp_path / "t.duckdb")
+    now = datetime.now(UTC)
+    rows = [
+        {
+            "depositAddress": f"addr{i:04d}",
+            "createdAt": (now - timedelta(hours=h)).isoformat(),
+            "status": "SUCCESS",
+        }
+        for i, h in enumerate([1, 23, 25, 48])
+    ]
+    load_explorer_txs(con, rows)
+    assert purge_api_data(con) == 2
+    left = con.execute("SELECT count(*) FROM bronze.explorer_tx").fetchone()[0]
+    assert left == 2
+
+
+def test_summary_without_data_or_key_is_empty_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("INTENTS_EXPLORER_JWT", raising=False)
+    monkeypatch.setattr(web, "_db", {"con": connect(tmp_path / "t.duckdb")})
+    web._cache.update(at=0.0, data=None)
+    assert web.get_summary()["swaps"] == 0

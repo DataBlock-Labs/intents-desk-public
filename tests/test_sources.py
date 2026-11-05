@@ -11,6 +11,7 @@ def capture_headers(monkeypatch, url):
         return io.BytesIO(b"{}")
 
     monkeypatch.setattr(sources._opener, "open", fake_urlopen)
+    monkeypatch.setattr(sources._public, "open", fake_urlopen)
     sources.get_json(url)
     return seen
 
@@ -75,28 +76,47 @@ def test_fee_zero_sends_no_app_fees(monkeypatch):
     assert "appFees" not in capture_body(monkeypatch, dry=False)["body"]
 
 
-def test_redirects_are_not_followed():
-    """An API key header must never follow a 30x to another host."""
+def test_keyed_requests_refuse_redirects_public_ones_follow(monkeypatch):
+    """An API key must never follow a 30x to another host; neardata's 302 must work."""
+    import json
     import threading
     import urllib.error
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     import pytest
 
-    class Redirect(BaseHTTPRequestHandler):
+    class Server(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(302)
-            self.send_header("Location", "http://evil.example/steal")
-            self.end_headers()
+            if self.path.endswith("/target"):
+                body = json.dumps({"auth": self.headers.get("Authorization")}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(302)
+                self.send_header("Location", "/target")
+                self.end_headers()
 
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
     try:
+        assert sources.get_json(f"{base}/public", retries=1) == {"auth": None}
+        monkeypatch.setattr(sources, "EXPLORER", base)
+        monkeypatch.setenv("INTENTS_EXPLORER_JWT", "secret")
         with pytest.raises(urllib.error.HTTPError) as err:
-            sources.get_json(f"http://127.0.0.1:{server.server_port}/x", retries=1)
+            sources.get_json(f"{base}/keyed", retries=1)
         assert err.value.code == 302
     finally:
         server.shutdown()
+
+
+def test_rpc_error_inside_result_means_none(monkeypatch):
+    reply = {"result": {"error": "access key does not exist while viewing", "logs": []}}
+    monkeypatch.setattr(sources, "get_json", lambda *a, **k: reply)
+    assert sources.get_access_key("near", "ed25519:x") is None

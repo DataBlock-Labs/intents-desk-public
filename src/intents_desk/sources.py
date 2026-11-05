@@ -8,11 +8,17 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
-NEARDATA = "https://mainnet.neardata.xyz/v0"
-RPC = "https://rpc.mainnet.near.org"
-ONECLICK = "https://1click.chaindefuser.com/v0"
-EXPLORER = "https://explorer.near-intents.org/api/v0"  # needs INTENTS_EXPLORER_JWT
+# Every base URL can be overridden by env (tests point them at fake servers).
+NEARDATA = os.environ.get("NEARDATA_URL", "https://mainnet.neardata.xyz/v0")
+RPC = os.environ.get("NEAR_RPC_URL", "https://rpc.mainnet.near.org")
+ONECLICK = os.environ.get("ONECLICK_URL", "https://1click.chaindefuser.com/v0")
+EXPLORER = os.environ.get(  # needs INTENTS_EXPLORER_JWT
+    "EXPLORER_URL", "https://explorer.near-intents.org/api/v0"
+)
 HEADERS = {"User-Agent": "intents-desk/0.1", "Content-Type": "application/json"}
+
+
+RATE_LIMITED = [0]  # 429 replies seen by this process
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -23,6 +29,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _opener = urllib.request.build_opener(_NoRedirect)
+_public = urllib.request.build_opener()
 
 
 def get_json(url: str, body: dict | None = None, retries: int = 6) -> dict:
@@ -37,11 +44,16 @@ def get_json(url: str, body: dict | None = None, retries: int = 6) -> dict:
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, data=data, headers=headers)
-            with _opener.open(req, timeout=30) as resp:
+            # Requests with a key never follow a redirect; public ones may (neardata's
+            # last_block/final answers with a 302 to the block).
+            opener = _opener if "Authorization" in headers else _public
+            with opener.open(req, timeout=30) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return json.load(exc)
+            if exc.code == 429:
+                RATE_LIMITED[0] += 1  # read by fetch loops to slow down
             if exc.code not in (429, 500, 502, 503, 504) or attempt == retries - 1:
                 raise
         except urllib.error.URLError:
@@ -164,7 +176,9 @@ def get_quote(request: dict, dry: bool = True, retries: int = 1) -> dict:
 def rpc_query(params: dict) -> dict | None:
     """Run one NEAR RPC `query` call. None if the account or key does not exist."""
     body = {"jsonrpc": "2.0", "id": 1, "method": "query", "params": params}
-    return get_json(RPC, body, retries=1).get("result")  # only web requests use this
+    result = get_json(RPC, body, retries=1).get("result")  # only web requests use this
+    # An unknown key or account comes back as 200 with {"error": ...} inside "result".
+    return None if not result or "error" in result else result
 
 
 def get_access_key(account: str, public_key: str) -> dict | None:
@@ -185,14 +199,15 @@ def get_account(account: str) -> dict | None:
 
 
 # Feed of community posts about swap problems.
-X_SEARCH = "https://api.x.com/2/tweets/search/recent"
+X_SEARCH = os.environ.get("X_SEARCH_URL", "https://api.x.com/2/tweets/search/recent")
 X_QUERY = (
     '("near intents" OR 1click OR @near_intents) '
     "(stuck OR refund OR refunded OR failed OR support OR lost) -is:retweet lang:en"
 )
-REDDIT_RECENT = (
+REDDIT_RECENT = os.environ.get(
+    "REDDIT_URL",
     "https://arctic-shift.photon-reddit.com/api/posts/search"
-    "?subreddit=nearprotocol&limit=100&sort=desc"
+    "?subreddit=nearprotocol&limit=100&sort=desc",
 )
 FEED_TERMS = {
     "stuck": ("stuck", "pending", "lost", "missing", "never arrived"),

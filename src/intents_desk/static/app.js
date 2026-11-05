@@ -74,6 +74,7 @@ function swapAgain(address) {
 async function loadHealth() {
   const [ok, d] = await getJSON("/api/summary");
   if (!ok) { $("pill").textContent = d.error || "Network data unavailable"; return; }
+  if (!d.swaps) { $("pill").textContent = "No swap data yet"; $("window").textContent = "Network health needs the Explorer API key (see README)."; return; }
   const refunded = d.status.find(([s]) => s === "REFUNDED")?.[2] ?? 0;
   $("pill").textContent = `${fmt(d.swaps)} newest swaps · ${refunded}% refunded`;
   $("window").textContent = `${new Date(d.first).toLocaleTimeString()}–${new Date(d.last).toLocaleTimeString()} · ${usd(d.usd_in)} in` + (d.synced_at ? ` · synced ${ago(d.synced_at)}` : "");
@@ -125,7 +126,7 @@ function showAccount(account) {
 
 async function loadMine() {
   const [ok, d] = await getJSON("/api/me");
-  if (!ok) { showAccount(null); return; }
+  if (!ok || !d.account) { showAccount(null); return; }
   showAccount(d.account);
   const out = $("mine-out"); out.replaceChildren();
   const dl = el("dl"); dl.append(el("dt", "Account"), el("dd", d.account), el("dt", "Balance"), el("dd", `${d.balance_near} NEAR`)); out.append(dl);

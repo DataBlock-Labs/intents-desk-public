@@ -2,16 +2,25 @@
 
 import argparse
 import json
+import queue
+import threading
 import time
 
 from . import sources
 from .store import connect, load_block
 
 
+def next_gap(gap: float, base: float, rate_limited: bool) -> float:
+    """Seconds between request starts: back off 1.5x after a 429, else drift back to base."""
+    return min(gap * 1.5, 5.0) if rate_limited else max(base, gap * 0.98)
+
+
 def cmd_fetch(args) -> None:
     """Fetch the last N final blocks and keep their intents.near receipts.
 
-    Blocks already fetched are skipped, so an interrupted run can be resumed.
+    One thread fetches at most one block per `--sleep` seconds (neardata's free limit);
+    the main thread stores the previous block meanwhile. Blocks already fetched are
+    skipped, so an interrupted run can be resumed.
     """
     con = connect(args.db)
     head = args.end or sources.get_final_height()
@@ -22,15 +31,40 @@ def cmd_fetch(args) -> None:
             [head - args.blocks],
         ).fetchall()
     }
+    todo = [h for h in range(head, head - args.blocks, -1) if h not in seen]
+    blocks: queue.Queue = queue.Queue(maxsize=8)
+
+    def produce() -> None:
+        gap, hits, start = args.sleep, sources.RATE_LIMITED[0], time.monotonic()
+        for height in todo:
+            time.sleep(max(0.0, start - time.monotonic()))
+            start = time.monotonic() + gap
+            try:
+                blocks.put((height, sources.get_block(height)))
+            except (OSError, ValueError, RuntimeError) as exc:
+                blocks.put((height, exc))
+                return
+            gap = next_gap(gap, args.sleep, sources.RATE_LIMITED[0] > hits)
+            hits = sources.RATE_LIMITED[0]
+        blocks.put(None)
+
+    threading.Thread(target=produce, daemon=True).start()
     new_events = fetched = 0
-    for height in range(head, head - args.blocks, -1):
-        if height in seen:
-            continue
-        block = sources.get_block(height)
+    began = time.monotonic()
+    while (item := blocks.get()) is not None:
+        height, block = item
+        if isinstance(block, Exception):
+            raise block  # resume later: stored blocks are skipped
         fetched += 1
         if block is not None:
             new_events += load_block(con, block)
-        time.sleep(args.sleep)
+        if fetched % 100 == 0:
+            per_min = fetched / (time.monotonic() - began) * 60
+            print(
+                f"{fetched}/{len(todo)} blocks, {per_min:.0f}/min, events {new_events},"
+                f" 429s {sources.RATE_LIMITED[0]}, at {height}",
+                flush=True,
+            )
     print(
         f"blocks {head - args.blocks + 1}..{head}: fetched {fetched}, new events {new_events}"
     )
@@ -68,7 +102,7 @@ def cmd_sync(args) -> None:
     """Get every 1Click swap of the last N hours from the Explorer API."""
     from datetime import UTC, datetime, timedelta
 
-    from .store import load_explorer_txs
+    from .store import load_explorer_txs, purge_api_data
 
     con = connect(args.db)
     start = datetime.now(UTC) - timedelta(hours=args.hours)
@@ -76,6 +110,7 @@ def cmd_sync(args) -> None:
     for page in sources.iter_explorer_since(start):
         total += load_explorer_txs(con, page)
         print(f"swaps {total}, oldest {page[-1]['createdAt']}", flush=True)
+    print(f"purged {purge_api_data(con)} swaps older than 24 h (1Click API terms)")
     print(con.sql("SELECT status, count(*) AS n FROM silver.swap GROUP BY ALL"))
 
 
@@ -146,7 +181,8 @@ def main() -> None:
     p = sub.add_parser("fetch", help="fetch the last N blocks of intents.near activity")
     p.add_argument("--blocks", type=int, default=100)
     p.add_argument("--end", type=int, help="last block height (default: final head)")
-    p.add_argument("--sleep", type=float, default=0.35)  # neardata: ~180 req/min per IP
+    # neardata free tier: 30 blocks/minute per IP (HTTP 429 text, checked 2026-11-05)
+    p.add_argument("--sleep", type=float, default=2.0)
     p.set_defaults(func=cmd_fetch)
     sub.add_parser("stats", help="summarize the database").set_defaults(func=cmd_stats)
     p = sub.add_parser("swap", help="where's my swap? (1Click status trail)")
