@@ -4,3 +4,7 @@ __pycache__/
 *.duckdb
 *.duckdb.wal
 .env
+bench/
+.vscode/
+reports/partner-*
+docs/images/*.tmp.png

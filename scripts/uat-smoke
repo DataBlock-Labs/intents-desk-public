@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Smoke test: run the server on a free port with a temporary database, then check routes.
+set -euo pipefail
+dir=$(mktemp -d)
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+SESSION_KEY_FILE="$dir/session.key" INTENTS_EXPLORER_JWT= X_BEARER_TOKEN= \
+	uv run intents-desk --db "$dir/uat.duckdb" serve --port "$port" >"$dir/log" 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -rf "$dir"' EXIT
+base="http://127.0.0.1:$port"
+for _ in $(seq 150); do curl -fs -o /dev/null "$base/" && break; sleep 0.2; done
+check() { # expected-status method path [curl args...]
+	want=$1; shift
+	got=$(curl -s -o /dev/null -w '%{http_code}' "$@" || true)
+	[ "$got" = "$want" ] || { echo "uat: FAIL $* -> $got (want $want)"; cat "$dir/log"; exit 1; }
+	echo "uat: ok $want $*"
+}
+check 200 "$base/"
+check 200 "$base/static/app.js"
+check 200 "$base/static/near-connect.js"
+check 404 "$base/static/../web.py"
+check 200 "$base/api/auth/challenge"
+check 400 "$base/api/swap?address=a%26b"
+check 401 "$base/api/me"
+check 403 -X POST -H "Origin: https://evil.example" -H "Content-Type: application/json" -d '{}' "$base/api/auth/verify"
+check 413 -X POST -H "Origin: $base" -H "Content-Type: application/json" -H "Content-Length: -1" "$base/api/auth/verify"

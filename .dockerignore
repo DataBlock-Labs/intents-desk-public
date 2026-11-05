@@ -1,0 +1,13 @@
+.git
+.venv
+data
+bench
+reports
+docs
+tests
+scripts
+.vscode
+.githooks
+**/__pycache__
+*.duckdb*
+.env

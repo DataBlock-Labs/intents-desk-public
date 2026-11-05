@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Pre-merge gate: run the checks before a push or merge. See the premerge-gate skill.
+# One command per line: set -e does not stop on the left side of `&&`.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+tier_fast() {
+	uv run ruff check .
+	uv run ruff format --check .
+	uv run pytest -q
+	uv run python scripts/ui_check.py
+}
+
+tier_full() {
+	tier_fast
+	docker build -q -t intents-desk:premerge .
+}
+
+# Start the app on a free port with an empty database and check the public surface.
+tier_uat() {
+	scripts/uat-smoke
+}
+
+lib=${PREMERGE_LIB:-$HOME/projects/hermes-ops/bin/premerge-lib.sh}
+if [ -f "$lib" ]; then
+	# shellcheck source=/dev/null
+	. "$lib"
+	premerge_main "$@"
+else
+	echo "premerge: $lib missing; running tier without stamp" >&2
+	"tier_${1:-fast}"
+fi

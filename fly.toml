@@ -1,0 +1,31 @@
+# Fly.io app for the live demo. Secrets (set with `fly secrets`, never in this file):
+# INTENTS_EXPLORER_JWT, ONECLICK_JWT, X_BEARER_TOKEN, PUBLIC_HOST, SWAP_LIVE.
+app = "intents-desk"
+primary_region = "iad"
+
+[build]
+
+[env]
+PORT = "8420"
+
+[mounts]
+source = "desk_data"
+destination = "/data"
+
+[http_service]
+internal_port = 8420
+force_https = true
+auto_stop_machines = "off"   # the sync thread must keep running
+auto_start_machines = true
+min_machines_running = 1
+
+[[http_service.checks]]
+interval = "30s"
+timeout = "5s"
+grace_period = "60s"
+method = "GET"
+path = "/"
+
+[[vm]]
+size = "shared-cpu-1x"
+memory = "512mb"
