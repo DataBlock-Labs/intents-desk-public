@@ -450,7 +450,15 @@ class Handler(BaseHTTPRequestHandler):
                         404, {"error": "Swap not found (kept for 24 hours)."}
                     )
                 else:  # reduced view: the reply never contains any address
-                    self.send_json(200, public_view(swap_view(address)))
+                    data = swap_view(address)
+                    if (
+                        "status" not in data
+                    ):  # 1Click's not-found text holds the address
+                        self.send_json(
+                            404, {"error": "1Click does not know this swap."}
+                        )
+                    else:
+                        self.send_json(200, public_view(data))
                 return
             if not ADDRESS.match(address):
                 self.send_json(400, {"error": "Not a valid deposit address."})

@@ -230,8 +230,9 @@ def test_partner_view_and_recent_swaps(app, page):
     page.select_option("#f-partner", "")
     expect(page.locator("#swaps")).not_to_contain_text("REFUNDED")
     page.locator("#swaps button.addr").first.click()
-    expect(page.locator("#swap")).to_contain_text("not found")  # by ref (fake 1Click)
+    expect(page.locator("#swap")).to_contain_text("does not know this swap")  # by ref
     assert page.locator("#addr").input_value() == ""  # the page never held the address
+    assert "dep0" not in page.locator("#swap").inner_text()  # nor did the error text
     page.click("#partner-close")
     expect(page.locator("#partner-view")).to_be_hidden()
     assert page.evaluate("window.__csp || []") == []
