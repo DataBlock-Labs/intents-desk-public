@@ -7,18 +7,24 @@ cd "$(git rev-parse --show-toplevel)"
 tier_fast() {
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run pytest -q
+	uv run pytest -q # unit, property, data-assertion and integration (fake APIs) tests
 	uv run python scripts/ui_check.py
 }
 
 tier_full() {
 	tier_fast
+	uv run pytest -q -m "live and not e2e" # contract tests against the real public APIs
+	uv run python scripts/bench_parse.py --max-ms 40
+	scripts/security-scan
 	docker build -q -t intents-desk:premerge .
 }
 
-# Start the app on a free port with an empty database and check the public surface.
+# UAT: the curl smoke test and the Playwright suite against a local process (fake APIs),
+# then the smoke and browser checks again against the Docker image.
 tier_uat() {
 	scripts/uat-smoke
+	uv run pytest -q -m e2e
+	scripts/uat-container
 }
 
 lib=${PREMERGE_LIB:-$HOME/projects/hermes-ops/bin/premerge-lib.sh}

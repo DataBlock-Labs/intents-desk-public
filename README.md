@@ -58,6 +58,11 @@ make serve    # then open http://localhost:8420
 
 Keys go in environment variables, never in the repository.
 
+**Data retention.** 1Click API data (including Explorer swaps) is kept for at most 24 hours,
+as the [1Click API terms](https://docs.near-intents.org/security-compliance/terms-of-service.md)
+(§4.1(e)) require: the server deletes older rows after every sync. Reports keep only the
+aggregate numbers derived from that window.
+
 ## What we found (Nov 3–5, 2026)
 
 From 73,593 swaps and $74.0M over 40 hours (`reports/thesis-2026-11-05.md`):

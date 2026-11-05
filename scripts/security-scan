@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Secrets in git history (TruffleHog, same flags as the DataBolt CI) and known-vulnerable
+# dependencies (pip-audit on the locked runtime deps).
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/trufflesecurity/trufflehog:latest \
+	git file:///repo --results=verified,unknown --fail --no-update
+uv export --no-dev --no-hashes --no-emit-project --format requirements-txt >"${TMPDIR:-/tmp}/desk-reqs.txt"
+uvx pip-audit --strict -r "${TMPDIR:-/tmp}/desk-reqs.txt"
