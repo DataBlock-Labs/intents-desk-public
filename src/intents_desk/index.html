@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Check a NEAR Intents swap, see refund rates by partner and route, and read what users report. A NEAR × DataBlock product, built at NEAR HACKATHON.">
+<title>Intents Desk: where's my swap?</title>
+<link rel="icon" href="/static/intents-desk-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/tokens.css">
+<style>
+  /* DataBlock design system: tokens.css (databolt-design v0.1.0, do not edit).
+     House rules: dark, radius 0, mono first, 1px rules instead of cards, one action colour (green). */
+  :root {
+    color-scheme: dark;
+    --bg: var(--db-color-app-bg-primary); --bg-2: var(--db-color-app-bg-secondary); --bg-3: var(--db-color-app-bg-tertiary);
+    --fg: var(--db-color-app-text-primary); --fg-2: var(--db-color-app-text-secondary); --fg-3: var(--db-color-app-text-tertiary);
+    --rule: var(--db-color-app-border-primary); --rule-2: var(--db-color-app-border-accent);
+    --act: var(--db-color-app-accent-green); --on-act: var(--db-color-app-bg-primary);
+    --ok: var(--db-color-app-accent-green); --warn: var(--db-color-app-accent-yellow); --bad: var(--db-color-app-accent-red);
+    --data: #3987e5; /* chart series colour, checked with the dataviz validator on --bg */
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+    --tap: var(--db-size-touch-target); --fast: var(--db-motion-fast); --ease: var(--db-motion-ease-enter);
+    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+  }
+  *, *::before, *::after { box-sizing: border-box; border-radius: 0; }
+  body { margin: 0; font: 14px/1.6 var(--mono); font-variant-ligatures: none; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
+  body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .55;
+    background-image: linear-gradient(var(--bg-2) 1px, transparent 1px), linear-gradient(90deg, var(--bg-2) 1px, transparent 1px); background-size: 48px 48px; }
+  a { color: var(--fg); text-decoration-color: var(--act); text-underline-offset: 3px; }
+  a:hover { color: var(--act); }
+  .skip { position: absolute; left: -999px; } .skip:focus { left: var(--s4); top: var(--s4); background: var(--act); color: var(--on-act); padding: var(--s2); z-index: 9; }
+  :focus-visible { outline: 2px solid var(--act); outline-offset: 2px; }
+
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--rule); }
+  .bar { max-width: 1200px; margin: 0 auto; padding: var(--s3) var(--s4); display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; min-height: 64px; }
+  .lockup { display: flex; align-items: center; gap: var(--s3); margin-right: auto; }
+  .lockup .mark { width: 30px; height: 30px; }
+  .lockup h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: .08em; }
+  .lockup h1 span { color: var(--fg-2); }
+  .lockup .x { color: var(--fg-3); }
+  .lockup .near { height: 18px; width: 74px; } /* NEAR's official file, unmodified, at cap height; 1440:351 ratio */
+  .pill { font-size: 12px; padding: var(--s1) var(--s3); border: 1px solid var(--rule); color: var(--fg-2); min-width: 38ch; text-align: center; white-space: nowrap; }
+  @media (max-width: 760px) { h2 { flex-wrap: wrap; } h2 .note { flex-basis: 100%; margin-left: 0; min-height: 1.6em; } .pill { order: 3; flex-basis: 100%; min-width: 0; } } /* own row on phones: no reflow when the text loads */
+
+  main { max-width: 1200px; margin: 0 auto; padding: 0 var(--s4) var(--s6); }
+  section { border-bottom: 1px solid var(--rule); padding: var(--s5) 0; min-width: 0; }
+  .cols { display: grid; gap: 0 var(--s6); grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .cols > * { min-width: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; margin: 0 0 var(--s3); display: flex; gap: var(--s2); align-items: center; color: var(--fg); }
+  h2::before { content: "//"; color: var(--act); }
+  h2.plain::before { content: none; }
+  h2 .note { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .dim { color: var(--fg-2); } .small { font-size: 12px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  form { display: flex; gap: var(--s2); flex-wrap: wrap; }
+  label { width: 100%; color: var(--fg-2); font-size: 12px; }
+  input { flex: 1; min-width: 220px; min-height: var(--tap); padding: var(--s2) var(--s3); border: 1px solid var(--rule-2); background: var(--bg-2); color: var(--fg); font: 13px var(--mono); }
+  button { min-height: var(--tap); padding: var(--s2) var(--s4); border: 1px solid var(--act); background: var(--act); color: var(--on-act); font: 700 13px var(--mono); letter-spacing: .04em; cursor: pointer; transition: filter var(--fast) var(--ease); }
+  button:hover { filter: brightness(1.1); } button:disabled { opacity: .6; cursor: wait; }
+  button.ghost { background: transparent; color: var(--fg); border-color: var(--rule-2); }
+  button.chip { min-height: 36px; padding: var(--s1) var(--s3); background: transparent; color: var(--fg-2); border-color: var(--rule-2); font-weight: 500; }
+  button.chip[aria-pressed="true"] { color: var(--on-act); background: var(--act); border-color: var(--act); }
+  .mt { margin-top: var(--s3); }
+
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: left; padding: 6px var(--s2) 6px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--fg-3); font-weight: 500; font-size: 12px; } td.n, th.n { text-align: right; }
+  .s-SUCCESS { color: var(--ok); } .s-REFUNDED, .s-PROCESSING, .s-PENDING_DEPOSIT, .s-INCOMPLETE_DEPOSIT { color: var(--warn); } .s-FAILED { color: var(--bad); }
+  .alert { color: var(--bad); font-weight: 700; font-size: 11px; border: 1px solid var(--bad); padding: 0 4px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--s1) var(--s4); margin: var(--s3) 0 0; } dt { color: var(--fg-3); } dd { margin: 0; word-break: break-all; }
+  .next { margin-top: var(--s3); padding: var(--s3); border-left: 2px solid var(--act); background: var(--bg-2); }
+  .card { border: 1px solid var(--rule); padding: var(--s4); margin-top: var(--s3); }
+
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 72px; margin: var(--s2) 0; border-bottom: 1px solid var(--rule); }
+  .bars span { flex: 1; background: var(--data); min-height: 2px; }
+  .axis { display: flex; justify-content: space-between; gap: var(--s2); margin: 0; }
+  .health { min-height: 560px; } /* reserve space so loading tables do not shift the page */
+  .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); min-height: 320px; max-height: 640px; overflow-y: auto; }
+  .feed li { border-bottom: 1px solid var(--rule); padding-bottom: var(--s3); }
+  .feed p { margin: var(--s1) 0; white-space: pre-line; overflow-wrap: anywhere; }
+  .chips { display: flex; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s3); }
+  .mine { min-height: 160px; }
+  .hidden { display: none; }
+  footer { max-width: 1200px; margin: 0 auto; padding: var(--s5) var(--s4) var(--s6); color: var(--fg-2); font-size: 12px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#lookup-h">Skip to swap lookup</a>
+<header>
+  <div class="bar">
+    <div class="lockup">
+      <img class="mark" src="/static/intents-desk-mark.svg" alt="" width="30" height="30">
+      <h1>INTENTS <span>DESK</span></h1>
+      <span class="x" aria-hidden="true">×</span>
+      <img class="near" src="/static/near-logo.svg" alt="NEAR" width="74" height="18">
+    </div>
+    <span id="pill" class="pill" role="status" aria-atomic="true">Loading network…</span>
+    <button id="connect" type="button">Connect wallet</button>
+    <span id="who" class="hidden small"></span>
+    <button id="signout" type="button" class="ghost hidden">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <div class="cols">
+    <section aria-labelledby="lookup-h">
+      <h2 id="lookup-h">Where's my swap?</h2>
+      <form id="lookup">
+        <label for="addr">Deposit address from your NEAR Intents (1Click) swap</label>
+        <input id="addr" name="address" autocomplete="off" spellcheck="false" placeholder="e.g. TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq" required>
+        <button type="submit">Check</button>
+      </form>
+      <div id="swap" aria-live="polite"></div>
+    </section>
+
+    <section id="mine" class="mine" aria-labelledby="mine-h">
+      <h2 id="mine-h">My swaps</h2>
+      <div id="mine-out">
+        <p class="dim">Connect your NEAR wallet to see your swaps and watch them. Signing in signs a message only: no transaction, no fee. This site never asks for your keys.</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="health" aria-labelledby="health-h">
+    <h2 id="health-h">Network health <span id="window" class="note dim small"></span></h2>
+    <p class="dim small" id="hourly-label">Refunded share of all swaps, per hour (UTC), last 24 hours of data.</p>
+    <div id="bars" class="bars" role="img" aria-labelledby="hourly-label"></div>
+    <p id="bars-axis" class="axis dim small"></p>
+    <div class="scroll"><table id="hourly" class="sr"></table></div>
+    <div class="cols mt">
+      <div><h2 class="plain">Partners, last hour</h2><div class="scroll"><table id="partners"></table></div>
+        <p class="dim small">ALERT: at least 50 swaps and at least 50% refunded. Partner = the app that sent the swap (1Click referral).</p></div>
+      <div><h2 class="plain">Busiest routes</h2><div class="scroll"><table id="routes"></table></div></div>
+      <div><h2 class="plain">Status</h2><table id="status"></table><h2 class="plain mt">Refund reasons</h2><table id="reasons"></table></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="feed-h">
+    <h2 id="feed-h">What people report <span id="feed-note" class="note dim small"></span></h2>
+    <div class="chips" role="group" aria-label="Filter posts">
+      <button class="chip" type="button" data-tag="" aria-pressed="true">All</button>
+      <button class="chip" type="button" data-tag="stuck" aria-pressed="false">Stuck</button>
+      <button class="chip" type="button" data-tag="refund" aria-pressed="false">Refund</button>
+      <button class="chip" type="button" data-tag="support" aria-pressed="false">Support</button>
+    </div>
+    <ul id="feed" class="feed" aria-live="polite"></ul>
+  </section>
+</main>
+
+<footer>
+  <p>A NEAR × DataBlock product. Built at NEAR HACKATHON. DataBlock never holds your funds or keys. Not financial advice.</p>
+  <p>Data: NEAR Intents Explorer and 1Click APIs, NEAR RPC, X and Reddit (r/nearprotocol). <a href="https://github.com/DataBlock-Labs/intents-desk">Source</a>. The NEAR logo belongs to NEAR and is used unmodified.</p>
+</footer>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

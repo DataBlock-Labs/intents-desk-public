@@ -3,9 +3,12 @@ name = "intents-desk"
 version = "0.1.0"
 description = "Where's my swap? Open data and an agent for NEAR Intents."
 readme = "README.md"
-license = "MIT"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 requires-python = ">=3.12"
-dependencies = ["duckdb>=1.1"]
+dependencies = [
+    "cryptography>=43",
+    "duckdb>=1.1",
+]
 
 [project.scripts]
 intents-desk = "intents_desk.cli:main"
