@@ -61,6 +61,7 @@ FROM ops.hourly_swap_summary GROUP BY ALL;
 """
 # Public chain tables that may be backed up in full (not 1Click API data).
 CHAIN_TABLES = ("bronze.receipt", "silver.event", "silver.token_diff")
+BACKUP_TABLES = ("ops.run_log", "ops.hourly_swap_summary", *CHAIN_TABLES)
 CHAIN_MACRO = """
 CREATE OR REPLACE TEMP MACRO ops_chain(a) AS (
     CASE
@@ -195,8 +196,10 @@ def backup(con, product: str, out_dir: str | Path) -> Path:
     ensure(con)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
     folder = Path(out_dir) / product / stamp
+    if "'" in str(folder):  # COPY takes no parameter for the file name
+        raise ValueError(f"backup folder may not contain a quote: {folder}")
     folder.mkdir(parents=True, exist_ok=False)
-    tables = ["ops.run_log", "ops.hourly_swap_summary", *CHAIN_TABLES]
+    tables = list(BACKUP_TABLES)
     existing = {
         f"{s}.{t}"
         for s, t in con.execute(
@@ -236,6 +239,11 @@ def verify_backup(folder: str | Path) -> list[str]:
     problems = []
     con = duckdb.connect()
     for table, meta in manifest["tables"].items():
+        if (
+            table not in BACKUP_TABLES
+        ):  # the manifest is untrusted input (e.g. from the NAS)
+            problems.append(f"{table!r}: not a known backup table")
+            continue
         path = folder / f"{table}.parquet"
         if not path.exists():
             problems.append(f"{table}: file missing")
@@ -243,7 +251,9 @@ def verify_backup(folder: str | Path) -> list[str]:
         if _sha256(path) != meta["sha256"]:
             problems.append(f"{table}: hash differs")
             continue  # a changed file may not even be readable Parquet
-        rows = con.execute(f"SELECT count(*) FROM '{path}'").fetchone()[0]
+        rows = con.execute(
+            "SELECT count(*) FROM read_parquet(?)", [str(path)]
+        ).fetchone()[0]
         if rows != meta["rows"]:
             problems.append(f"{table}: {rows} rows, manifest says {meta['rows']}")
     return problems

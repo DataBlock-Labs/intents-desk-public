@@ -214,3 +214,23 @@ def test_push_reports_a_file_corrupted_on_the_way(tmp_path, monkeypatch):
 def test_push_needs_an_absolute_remote_path(tmp_path):
     with pytest.raises(ValueError):
         ops.push(tmp_path, "nas:relative/path")
+
+
+def test_a_tampered_manifest_cannot_name_other_tables_or_files(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    load_block(con, BLOCK)
+    folder = ops.backup(con, "intents-desk", tmp_path / "b")
+    manifest = json.loads((folder / "manifest.json").read_text())
+    manifest["tables"]["x') ; DROP TABLE y; --"] = {"rows": 0, "sha256": "0"}
+    manifest["tables"]["../../etc/passwd"] = {"rows": 0, "sha256": "0"}
+    (folder / "manifest.json").write_text(json.dumps(manifest))
+    problems = ops.verify_backup(folder)
+    assert sum("not a known backup table" in p for p in problems) == 2
+    assert len(problems) == 2  # the real tables still check out
+
+
+def test_backup_folder_with_a_quote_is_refused(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    with pytest.raises(ValueError, match="quote"):
+        ops.backup(con, "intents-desk", tmp_path / "it's")
+    assert not (tmp_path / "it's").exists()  # refused before anything is created
