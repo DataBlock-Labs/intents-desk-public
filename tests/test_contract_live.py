@@ -17,9 +17,18 @@ KNOWN_SWAP = (
 
 
 def test_neardata_final_block_redirect_and_block_shape():
-    height = sources.get_final_height()  # follows neardata's 302
+    import urllib.error
+
+    try:
+        height = sources.get_final_height()  # follows neardata's 302
+        block = sources.get_block(height - 5)
+    except urllib.error.HTTPError as exc:
+        if (
+            exc.code == 429
+        ):  # the free limit (30 blocks/min) is per IP and may be in use
+            pytest.skip("neardata rate limit reached on this IP; contract not checked")
+        raise
     assert height > 223_000_000
-    block = sources.get_block(height - 5)
     assert block["block"]["header"]["timestamp"]
     shard = block["shards"][0]
     assert "receipt_execution_outcomes" in shard
