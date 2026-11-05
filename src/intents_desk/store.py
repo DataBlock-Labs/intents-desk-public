@@ -13,6 +13,31 @@ from .events import iter_block_receipts, iter_events, iter_token_diffs, parse_lo
 SCHEMA = """
 CREATE SCHEMA IF NOT EXISTS bronze;
 CREATE SCHEMA IF NOT EXISTS silver;
+CREATE SCHEMA IF NOT EXISTS gold;
+CREATE SCHEMA IF NOT EXISTS app;
+CREATE TABLE IF NOT EXISTS bronze.feed_post (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    author TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    text TEXT NOT NULL,
+    url TEXT NOT NULL,
+    tags TEXT[],
+    fetched_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS gold.fill_sample (
+    deposit_address TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    fill_s DOUBLE NOT NULL,
+    sampled_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS app.watch (
+    account_id TEXT,
+    deposit_address TEXT,
+    added_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (account_id, deposit_address)
+);
 CREATE TABLE IF NOT EXISTS bronze.receipt (
     receipt_id TEXT PRIMARY KEY,
     tx_hash TEXT,
@@ -25,6 +50,15 @@ CREATE TABLE IF NOT EXISTS bronze.receipt (
 CREATE TABLE IF NOT EXISTS bronze.block_seen (
     block_height BIGINT PRIMARY KEY,
     fetched_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS bronze.explorer_tx (
+    deposit_address TEXT,
+    deposit_memo TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL,
+    fetched_at TIMESTAMPTZ DEFAULT now(),
+    raw JSON NOT NULL,
+    PRIMARY KEY (deposit_address, deposit_memo)
 );
 CREATE TABLE IF NOT EXISTS silver.event (
     receipt_id TEXT,
@@ -47,6 +81,36 @@ CREATE TABLE IF NOT EXISTS silver.token_diff (
     amount HUGEINT NOT NULL,
     PRIMARY KEY (intent_hash, token_id)
 );
+CREATE OR REPLACE VIEW silver.swap AS
+SELECT
+    deposit_address,
+    deposit_memo,
+    created_at,
+    status,
+    raw->>'originAsset' AS origin_asset,
+    raw->>'destinationAsset' AS destination_asset,
+    TRY_CAST(raw->>'amountInUsd' AS DOUBLE) AS amount_in_usd,
+    TRY_CAST(raw->>'amountOutUsd' AS DOUBLE) AS amount_out_usd,
+    raw->>'refundReason' AS refund_reason,
+    raw->>'depositType' AS deposit_type,
+    raw->>'referral' AS referral,
+    raw->>'recipient' AS recipient,
+    raw->>'refundTo' AS refund_to,
+    fetched_at
+FROM bronze.explorer_tx;
+CREATE OR REPLACE VIEW gold.partner_hour AS
+SELECT
+    date_trunc('hour', created_at) AS hour,
+    coalesce(nullif(referral, ''), '(none)') AS partner,
+    count(*) AS swaps,
+    count(*) FILTER (WHERE status = 'REFUNDED') AS refunds,
+    round(100 * avg((status = 'REFUNDED')::INT), 1) AS refund_pct,
+    round(sum(amount_in_usd)) AS usd_in,
+    round(sum(amount_in_usd) FILTER (WHERE status = 'REFUNDED')) AS refunded_usd,
+    count(DISTINCT refund_to) AS senders,
+    mode(refund_reason) FILTER (WHERE status = 'REFUNDED') AS top_reason
+FROM silver.swap
+GROUP BY ALL;
 """
 
 
@@ -141,5 +205,184 @@ def load_block(con, block: dict) -> int:
             r["block_height"],
             r["block_ts_ns"],
         )
-    con.execute("INSERT OR IGNORE INTO bronze.block_seen (block_height) VALUES (?)", [height])
+    con.execute(
+        "INSERT OR IGNORE INTO bronze.block_seen (block_height) VALUES (?)", [height]
+    )
     return event_count(con) - before
+
+
+def load_explorer_txs(con, txs: list[dict]) -> int:
+    """Store Explorer swaps. A swap seen again replaces the old row with its new status.
+
+    Return the number of rows written.
+    """
+    rows = [
+        [
+            t["depositAddress"],
+            t.get("depositMemo") or "",
+            t["createdAt"],
+            t["status"],
+            json.dumps(t),
+        ]
+        for t in txs
+    ]
+    con.executemany(
+        "INSERT OR REPLACE INTO bronze.explorer_tx"
+        " (deposit_address, deposit_memo, created_at, status, raw)"
+        " VALUES (?, ?, ?, ?, ?)",
+        rows,
+    )
+    return len(rows)
+
+
+def partner_report(con, hours: float, min_swaps: int, alert_pct: float):
+    """Get one row per partner for the last `hours`, worst refund rate first.
+
+    `alert` is true when a partner has at least `min_swaps` swaps and a refund rate
+    of at least `alert_pct` percent.
+    """
+    return con.execute(
+        """
+        SELECT
+            coalesce(nullif(referral, ''), '(none)') AS partner,
+            count(*) AS swaps,
+            round(100 * avg((status = 'REFUNDED')::INT), 1) AS refund_pct,
+            round(sum(amount_in_usd) FILTER (WHERE status = 'REFUNDED'))
+                AS refunded_usd,
+            count(DISTINCT refund_to) AS senders,
+            mode(refund_reason) FILTER (WHERE status = 'REFUNDED') AS top_reason,
+            CAST(min(created_at) AS VARCHAR) AS first_seen,
+            count(*) >= $min AND 100 * avg((status = 'REFUNDED')::INT) >= $pct
+                AS alert
+        FROM silver.swap
+        WHERE created_at > (SELECT max(created_at) FROM silver.swap)
+            - to_microseconds(CAST($hours * 3600e6 AS BIGINT))
+        GROUP BY 1
+        ORDER BY alert DESC, refunded_usd DESC NULLS LAST
+        """,
+        {"min": min_swaps, "pct": alert_pct, "hours": hours},
+    )
+
+
+def newest_swap_time(con):
+    """Get the time of the newest stored swap (UTC), or None for an empty table."""
+    from datetime import UTC, datetime
+
+    [(epoch,)] = con.execute(
+        "SELECT epoch(max(created_at)) FROM bronze.explorer_tx"
+    ).fetchall()
+    return datetime.fromtimestamp(epoch, UTC) if epoch is not None else None
+
+
+def newest_raw_swaps(con, n: int = 1000) -> list[dict]:
+    """Get the raw Explorer rows of the newest `n` swaps, newest first."""
+    rows = con.execute(
+        "SELECT raw FROM bronze.explorer_tx ORDER BY created_at DESC LIMIT ?", [n]
+    ).fetchall()
+    return [json.loads(r[0]) for r in rows]
+
+
+def hourly_refunds(con, hours: int = 24) -> list[list]:
+    """Get [hour (UTC text), swaps, refund %] for the last `hours` hours of data."""
+    return con.execute(
+        """
+        SELECT strftime(hour AT TIME ZONE 'UTC', '%Y-%m-%dT%H:00Z'),
+            sum(swaps)::INT, round(100.0 * sum(refunds) / sum(swaps), 1)
+        FROM gold.partner_hour
+        WHERE hour > (SELECT max(hour) FROM gold.partner_hour) - to_hours(?)
+        GROUP BY hour ORDER BY hour
+        """,
+        [hours],
+    ).fetchall()
+
+
+def account_swaps(con, account: str, limit: int = 50) -> list[list]:
+    """Get the stored swaps where `account` is the recipient or the refund address."""
+    return con.execute(
+        """
+        SELECT deposit_address, CAST(created_at AS VARCHAR), status, origin_asset,
+            destination_asset, amount_in_usd, refund_reason
+        FROM silver.swap WHERE recipient = $a OR refund_to = $a
+        ORDER BY created_at DESC LIMIT $n
+        """,
+        {"a": account, "n": limit},
+    ).fetchall()
+
+
+def save_feed(con, posts: list[dict]) -> None:
+    con.executemany(
+        "INSERT OR REPLACE INTO bronze.feed_post"
+        " (id, source, author, created_at, text, url, tags) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            [
+                p["id"],
+                p["source"],
+                p["author"],
+                p["created_at"],
+                p["text"],
+                p["url"],
+                p["tags"],
+            ]
+            for p in posts
+        ],
+    )
+
+
+def read_feed(con, tag: str | None = None, limit: int = 30) -> list[dict]:
+    rows = con.execute(
+        """
+        SELECT id, source, author, CAST(created_at AS VARCHAR), text, url, tags
+        FROM bronze.feed_post
+        WHERE len(tags) > 0 AND ($tag IS NULL OR list_contains(tags, $tag))
+        ORDER BY created_at DESC LIMIT $n
+        """,
+        {"tag": tag, "n": limit},
+    ).fetchall()
+    keys = ("id", "source", "author", "created_at", "text", "url", "tags")
+    return [dict(zip(keys, r, strict=True)) for r in rows]
+
+
+def watch_list(con, account: str) -> list[str]:
+    rows = con.execute(
+        "SELECT deposit_address FROM app.watch WHERE account_id = ? ORDER BY added_at",
+        [account],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def set_watch(con, account: str, address: str, on: bool) -> None:
+    if on:
+        con.execute(
+            "INSERT OR IGNORE INTO app.watch (account_id, deposit_address)"
+            " VALUES (?, ?)",
+            [account, address],
+        )
+    else:
+        con.execute(
+            "DELETE FROM app.watch WHERE account_id = ? AND deposit_address = ?",
+            [account, address],
+        )
+
+
+def fill_candidates(con, n: int) -> list[tuple[str, str]]:
+    """Get up to `n` settled SUCCESS swaps not sampled yet, in a fixed random order."""
+    return con.execute(
+        """
+        SELECT deposit_address, CAST(created_at AS VARCHAR) FROM silver.swap
+        WHERE status = 'SUCCESS'
+            AND created_at < (SELECT max(created_at) FROM silver.swap) - INTERVAL 1 HOUR
+            AND deposit_address NOT IN (SELECT deposit_address FROM gold.fill_sample)
+        ORDER BY hash(deposit_address) LIMIT ?
+        """,
+        [n],
+    ).fetchall()
+
+
+def save_fill(con, address: str, created_at: str, updated_at: str) -> None:
+    con.execute(
+        "INSERT OR REPLACE INTO gold.fill_sample"
+        " (deposit_address, created_at, updated_at, fill_s)"
+        " VALUES ($a, $c::TIMESTAMPTZ, $u::TIMESTAMPTZ,"
+        " epoch($u::TIMESTAMPTZ - $c::TIMESTAMPTZ))",
+        {"a": address, "c": created_at, "u": updated_at},
+    )
