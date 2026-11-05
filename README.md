@@ -179,6 +179,29 @@ keeping them.
   checked by `make ui-check`.
 - One project per submission; no other project is entered under this name.
 
+## Operations audit
+
+Every job (sync, feed, fetch, rollup, thesis, backup) writes a row to `ops.run_log`: start,
+end, status, rows, error and code version. Before raw 1Click data is purged at 24 hours, each
+complete and settled hour is rolled up into `ops.hourly_swap_summary` (partner, route,
+status, swaps, USD); `ops.daily_swap_summary` sums the hours. An hour is written once and
+never replaced, so a later partial source cannot shrink it.
+
+```sh
+make audit DB=<database>        # recent runs
+make backup DB=<database>       # Parquet backup + manifest (row counts, SHA-256), then verified
+uv run intents-desk verify-backup data/backups/intents-desk/<stamp>
+uv run intents-desk rollup --from-db <old.duckdb>   # aggregates from an older database
+```
+
+**Automatic backups.** Start the server with `BACKUP_DIR` (local folder) and/or `BACKUP_PUSH`
+(`host:/absolute/path`, e.g. the NAS) and it backs up once a day: Parquet + manifest, verified
+locally, copied over SSH, then every file's SHA-256 is checked again on the remote side. Each
+run is a row in `ops.run_log` (job `backup`). By hand: `uv run intents-desk backup --push host:/path`.
+
+The module is product-neutral (`src/intents_desk/ops.py`): other DataBlock products can use
+the same tables. Backups never contain raw 1Click/Explorer data (API terms §4.1(e)).
+
 ## Development
 
 ```sh

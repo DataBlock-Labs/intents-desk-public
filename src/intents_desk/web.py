@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -18,8 +19,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import auth, sources, store
+from . import auth, ops, sources, store
 
+PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ACCOUNT = re.compile(r"^[a-z0-9._-]{2,64}$")
 CACHE_SECONDS = 60
@@ -29,6 +31,7 @@ MAX_SYNC_HOURS = 24  # first run, or after a long downtime
 RATE_PER_MIN = 30  # per client IP, for the routes in RATE_LIMITED
 RATE_LIMITED = ("/api/swap", "/api/quote", "/api/me", "/api/auth/")
 FEED_SECONDS = 3600
+BACKUP_SECONDS = 24 * 3600
 MAX_BODY = 10_000
 STATIC = {
     "/static/app.js": "text/javascript",
@@ -210,31 +213,62 @@ def sync_start(newest: datetime | None, now: datetime) -> datetime:
 
 def sync_once() -> int:
     cur, n = db(), 0
-    start = sync_start(store.newest_swap_time(cur), datetime.now(UTC))
-    for page in sources.iter_explorer_since(start):
-        n += store.load_explorer_txs(cur, page)
-    store.purge_api_data(cur)  # 1Click API terms 4.1(e): keep API data at most 24 h
+    with ops.audited(cur, PRODUCT, "sync") as run:
+        start = sync_start(store.newest_swap_time(cur), datetime.now(UTC))
+        for page in sources.iter_explorer_since(start):
+            n += store.load_explorer_txs(cur, page)
+        run["rollup_rows"] = ops.rollup_swaps(
+            cur
+        )  # keep the daily numbers before the purge
+        run["purged"] = store.purge_api_data(
+            cur
+        )  # 1Click API terms 4.1(e): at most 24 h
+        run["rows"] = n
     _cache.update(at=0.0, data=None)  # show the new data at once, not after 60 s
     _status["synced_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     return n
 
 
 def feed_once() -> int:
-    posts, used = sources.get_reddit_posts(), ["reddit"]
-    if os.environ.get("X_BEARER_TOKEN"):
-        posts += sources.get_x_posts(10)
-        used.append("x")
-    store.save_feed(db(), posts)
+    cur = db()
+    with ops.audited(cur, PRODUCT, "feed") as run:
+        posts, used = sources.get_reddit_posts(), ["reddit"]
+        if os.environ.get("X_BEARER_TOKEN"):
+            posts += sources.get_x_posts(10)
+            used.append("x")
+        store.save_feed(cur, posts)
+        run.update(rows=len(posts), sources=used)
     _status.update(feed_at=datetime.now(UTC).isoformat(timespec="seconds"))
     _status["feed_sources"] = used
     return len(posts)
+
+
+def backup_once() -> int:
+    """Daily backup of the ops and chain tables; pushed to BACKUP_PUSH (host:/path) if set."""
+    cur = db()
+    with ops.audited(cur, PRODUCT, "backup") as run:
+        folder = ops.backup(cur, PRODUCT, os.environ.get("BACKUP_DIR", "data/backups"))
+        problems = ops.verify_backup(folder)
+        if os.environ.get("BACKUP_PUSH") and not problems:
+            problems = ops.push(folder, os.environ["BACKUP_PUSH"])
+            run["pushed_to"] = os.environ["BACKUP_PUSH"]
+        run.update(rows=1, path=str(folder), problems=problems)
+        if problems:
+            raise RuntimeError(f"backup check failed: {problems}")
+    return 1
 
 
 def _loop(name: str, fn, seconds: int) -> None:
     while True:
         try:
             print(f"[{name}] {fn()} rows", file=sys.stderr, flush=True)
-        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            subprocess.SubprocessError,
+        ) as exc:
             print(f"[{name}] failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         time.sleep(seconds)
 
@@ -416,6 +450,10 @@ def serve(
     threading.Thread(
         target=_loop, args=("feed", feed_once, FEED_SECONDS), daemon=True
     ).start()
+    if os.environ.get("BACKUP_DIR") or os.environ.get("BACKUP_PUSH"):
+        threading.Thread(
+            target=_loop, args=("backup", backup_once, BACKUP_SECONDS), daemon=True
+        ).start()
     host = host or os.environ.get("HOST", "127.0.0.1")
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Intents Desk on http://localhost:{port}  (Ctrl+C to stop)")

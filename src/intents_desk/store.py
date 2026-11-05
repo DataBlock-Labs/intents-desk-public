@@ -119,6 +119,9 @@ def connect(path: str | Path = "data/desk.duckdb") -> duckdb.DuckDBPyConnection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(path))
     con.execute(SCHEMA)
+    from .ops import ensure  # the shared operations audit tables
+
+    ensure(con)
     return con
 
 

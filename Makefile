@@ -1,4 +1,4 @@
-.PHONY: setup test fetch stats demo serve sync partners bench thesis fill-sample partner-report ui-check
+.PHONY: setup test fetch stats demo serve sync partners bench thesis fill-sample partner-report ui-check audit backup
 
 BLOCKS ?= 200
 HOURS ?= 24
@@ -53,3 +53,13 @@ partner-report: setup
 # DataBlock design rules on the page (scripts/ui_check.py). Exit 1 on any violation.
 ui-check:
 	uv run python scripts/ui_check.py
+
+# Operations audit (src/intents_desk/ops.py): recent job runs, and a verified Parquet backup
+# of the run log, hourly rollups and public chain data (never raw 1Click data).
+BACKUP_DIR ?= data/backups
+
+audit: setup
+	uv run intents-desk --db $(DB) audit
+
+backup: setup
+	uv run intents-desk --db $(DB) backup --out $(BACKUP_DIR)

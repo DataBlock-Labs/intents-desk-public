@@ -2,12 +2,15 @@
 
 import argparse
 import json
+import os
 import queue
 import threading
 import time
 
-from . import sources
+from . import ops, sources
 from .store import connect, load_block
+
+PRODUCT = "intents-desk"
 
 
 def next_gap(gap: float, base: float, rate_limited: bool) -> float:
@@ -49,11 +52,22 @@ def cmd_fetch(args) -> None:
         blocks.put(None)
 
     threading.Thread(target=produce, daemon=True).start()
-    new_events = fetched = 0
     began = time.monotonic()
+    with ops.audited(con, PRODUCT, "fetch") as run:
+        _consume(con, blocks, todo, began, run)
+    print(
+        f"blocks {head - args.blocks + 1}..{head}: fetched {run['rows']},"
+        f" new events {run['events']}"
+    )
+
+
+def _consume(con, blocks, todo, began, run) -> None:
+    """Store blocks from the fetch thread; print progress every 100 blocks."""
+    new_events = fetched = 0
     while (item := blocks.get()) is not None:
         height, block = item
         if isinstance(block, Exception):
+            run.update(rows=fetched, events=new_events)
             raise block  # resume later: stored blocks are skipped
         fetched += 1
         if block is not None:
@@ -65,9 +79,9 @@ def cmd_fetch(args) -> None:
                 f" 429s {sources.RATE_LIMITED[0]}, at {height}",
                 flush=True,
             )
-    print(
-        f"blocks {head - args.blocks + 1}..{head}: fetched {fetched}, new events {new_events}"
-    )
+        run.update(
+            rows=fetched, events=new_events, rate_limited=sources.RATE_LIMITED[0]
+        )
 
 
 def cmd_stats(args) -> None:
@@ -107,10 +121,14 @@ def cmd_sync(args) -> None:
     con = connect(args.db)
     start = datetime.now(UTC) - timedelta(hours=args.hours)
     total = 0
-    for page in sources.iter_explorer_since(start):
-        total += load_explorer_txs(con, page)
-        print(f"swaps {total}, oldest {page[-1]['createdAt']}", flush=True)
-    print(f"purged {purge_api_data(con)} swaps older than 24 h (1Click API terms)")
+    with ops.audited(con, PRODUCT, "sync-cli") as run:
+        for page in sources.iter_explorer_since(start):
+            total += load_explorer_txs(con, page)
+            print(f"swaps {total}, oldest {page[-1]['createdAt']}", flush=True)
+        run["rollup_rows"] = ops.rollup_swaps(con)  # daily numbers survive the purge
+        run["purged"] = purge_api_data(con)
+        run["rows"] = total
+    print(f"purged {run['purged']} swaps older than 24 h (1Click API terms)")
     print(con.sql("SELECT status, count(*) AS n FROM silver.swap GROUP BY ALL"))
 
 
@@ -157,7 +175,10 @@ def cmd_thesis(args) -> None:
     """Write the thesis report (markdown + SVG charts) from the database."""
     from .report import write_thesis
 
-    print(write_thesis(connect(args.db), args.out))
+    con = connect(args.db)
+    with ops.audited(con, PRODUCT, "thesis") as run:
+        run["path"] = write_thesis(con, args.out)
+    print(run["path"])
 
 
 def cmd_partner_report(args) -> None:
@@ -165,6 +186,59 @@ def cmd_partner_report(args) -> None:
     from .report import write_partner_report
 
     print(write_partner_report(connect(args.db), args.referral, args.out))
+
+
+def cmd_audit(args) -> None:
+    """Show the most recent job runs from ops.run_log."""
+    con = connect(args.db)
+    print(
+        f"{'started (UTC)':19}  {'product':12} {'job':10} {'status':7} {'rows':>8} {'secs':>7}  error"
+    )
+    for started, product, job, status, rows, secs, err in ops.recent_runs(
+        con, args.limit
+    ):
+        print(
+            f"{started:19}  {product:12} {job:10} {status:7} {rows or 0:8} {secs or 0:7}  {err}"
+        )
+
+
+def cmd_rollup(args) -> None:
+    """Add hourly swap aggregates (final hours only) from this DB or another one."""
+    import duckdb
+
+    con = connect(args.db)
+    source = duckdb.connect(args.from_db, read_only=True) if args.from_db else None
+    with ops.audited(con, PRODUCT, "rollup") as run:
+        run["rows"] = ops.rollup_swaps(con, source, label=args.from_db or "self")
+        run["from"] = args.from_db or args.db
+    print(
+        con.sql(
+            "SELECT day, sum(swaps) AS swaps, max(hours) AS hours, round(sum(usd_in)) AS usd_in,"
+            " round(sum(refunded_usd)) AS refunded_usd FROM ops.daily_swap_summary"
+            " GROUP BY day ORDER BY day"
+        )
+    )
+
+
+def cmd_backup(args) -> None:
+    """Back up the ops tables and public chain data to Parquet, then verify the copy."""
+    con = connect(args.db)
+    with ops.audited(con, PRODUCT, "backup") as run:
+        folder = ops.backup(con, PRODUCT, args.out)
+        problems = ops.verify_backup(folder)
+        if args.push and not problems:
+            problems = ops.push(folder, args.push)
+            run["pushed_to"] = args.push
+        run.update(path=str(folder), problems=problems)
+        if problems:
+            raise RuntimeError(f"backup check failed: {problems}")
+    print(folder, f"-> {args.push} (hashes checked on the remote)" if args.push else "")
+
+
+def cmd_verify_backup(args) -> None:
+    problems = ops.verify_backup(args.folder)
+    print("ok" if not problems else "\n".join(problems))
+    raise SystemExit(1 if problems else 0)
 
 
 def cmd_serve(args) -> None:
@@ -208,6 +282,27 @@ def main() -> None:
     p.add_argument("--referral", required=True, help="SQL LIKE pattern, e.g. %%:pda")
     p.add_argument("--out", default="reports")
     p.set_defaults(func=cmd_partner_report)
+    p = sub.add_parser("audit", help="show recent job runs (ops.run_log)")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_audit)
+    p = sub.add_parser(
+        "rollup", help="hourly swap aggregates into ops.hourly_swap_summary"
+    )
+    p.add_argument("--from-db", help="read swaps from another DuckDB file (read-only)")
+    p.set_defaults(func=cmd_rollup)
+    p = sub.add_parser("backup", help="Parquet backup of ops + public chain tables")
+    p.add_argument("--out", default=os.environ.get("BACKUP_DIR", "data/backups"))
+    p.add_argument(
+        "--push",
+        default=os.environ.get("BACKUP_PUSH", ""),
+        help="copy to host:/path over SSH and check hashes there (e.g. the NAS)",
+    )
+    p.set_defaults(func=cmd_backup)
+    p = sub.add_parser(
+        "verify-backup", help="check a backup folder against its manifest"
+    )
+    p.add_argument("folder")
+    p.set_defaults(func=cmd_verify_backup)
     p = sub.add_parser("serve", help="run the local dashboard")
     p.add_argument("--port", type=int, default=8420)
     p.set_defaults(func=cmd_serve)
