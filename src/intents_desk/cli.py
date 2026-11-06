@@ -241,6 +241,19 @@ def cmd_verify_backup(args) -> None:
     raise SystemExit(1 if problems else 0)
 
 
+def cmd_fees(args) -> None:
+    """Print the fee account's balances: in its wallet and inside intents.near."""
+    from .web import SWAP_ASSETS
+
+    account = args.account or sources.fee_settings()[0]
+    yocto = int((sources.get_account(account) or {}).get("amount", 0))
+    print(f"{account} wallet: {yocto / 10**24:.6f} NEAR ({yocto} yocto)")
+    held = sources.intents_balances(account, [t for t, _ in SWAP_ASSETS.values()])
+    for symbol, (token, decimals) in SWAP_ASSETS.items():
+        n = held.get(token, 0)
+        print(f"{account} in intents.near: {n / 10**decimals:.6f} {symbol} ({n})")
+
+
 def cmd_serve(args) -> None:
     """Run the local dashboard."""
     from .web import serve
@@ -303,6 +316,9 @@ def main() -> None:
     )
     p.add_argument("folder")
     p.set_defaults(func=cmd_verify_backup)
+    p = sub.add_parser("fees", help="fee account balances (wallet + intents.near)")
+    p.add_argument("--account", help="default: FEE_RECIPIENT (datablock.near)")
+    p.set_defaults(func=cmd_fees)
     p = sub.add_parser("serve", help="run the local dashboard")
     p.add_argument("--port", type=int, default=8420)
     p.set_defaults(func=cmd_serve)

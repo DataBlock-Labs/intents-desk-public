@@ -1,5 +1,6 @@
 """HTTP clients for the NEAR data sources and the 1Click swap API."""
 
+import base64
 import json
 import os
 import time
@@ -141,9 +142,10 @@ def fee_settings() -> tuple[str, int]:
 
 
 def get_quote(request: dict, dry: bool = True, retries: int = 1) -> dict:
-    """Get a 1Click quote that repeats an earlier swap request, with the DataBlock fee.
+    """Get a 1Click quote with the DataBlock fee and referral.
 
-    `request` is the quoteRequest of an earlier swap (asset ids, amount, addresses).
+    `request` holds the asset ids, amount and addresses: an earlier swap's quoteRequest
+    ("Swap again") or a new swap from the signed-in user's own account.
     With dry=False, 1Click returns a deposit address. No funds move until the user
     sends to it.
     """
@@ -168,6 +170,9 @@ def get_quote(request: dict, dry: bool = True, retries: int = 1) -> dict:
             )
         },
     }
+    body["referral"] = os.environ.get(
+        "REFERRAL_ID", "intents-desk"
+    )  # Explorer counts it
     if bps > 0:
         body["appFees"] = [{"recipient": recipient, "fee": bps}]
     return get_json(f"{ONECLICK}/quote", body, retries=retries)
@@ -196,6 +201,27 @@ def get_account(account: str) -> dict | None:
     return rpc_query(
         {"request_type": "view_account", "finality": "final", "account_id": account}
     )
+
+
+INTENTS = "intents.near"
+
+
+def intents_balances(account: str, token_ids: list[str]) -> dict[str, int]:
+    """Get an account's token balances held inside intents.near (base units)."""
+    args = base64.b64encode(
+        json.dumps({"account_id": account, "token_ids": token_ids}).encode()
+    ).decode()
+    result = rpc_query(
+        {
+            "request_type": "call_function",
+            "finality": "final",
+            "account_id": INTENTS,
+            "method_name": "mt_batch_balance_of",
+            "args_base64": args,
+        }
+    )
+    values = json.loads(bytes(result["result"])) if result else []
+    return {t: int(v) for t, v in zip(token_ids, values, strict=False)}
 
 
 # Feed of community posts about swap problems.

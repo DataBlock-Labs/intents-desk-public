@@ -202,6 +202,7 @@ async function loadMine() {
   const out = $("mine-out"); out.replaceChildren();
   const dl = el("dl"); dl.append(el("dt", "Account"), el("dd", d.account), el("dt", "Balance"), el("dd", `${d.balance_near} NEAR`)); out.append(dl);
   out.append(telegramRow(d.telegram));
+  out.append(swapForm(d));
   out.append(el("h2", "Watched swaps"));
   if (!d.watched.length) out.append(el("p", "None yet. Check a swap, then press Watch.", "dim small"));
   for (const w of d.watched) { const p = el("p", null, "mono small"); p.append(el("strong", w.address.slice(0, 12) + "… "), w.line); p.append(" ", watchButton(w.address, false)); out.append(p); }
@@ -209,6 +210,49 @@ async function loadMine() {
   if (!d.swaps.length) { out.append(el("p", "No swaps found for this account in the stored data.", "dim small")); return; }
   const t = el("table"), wrap = el("div", null, "scroll"); wrap.append(t); out.append(wrap);
   table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["Reason"]], d.swaps.map((s) => [new Date(s[1]).toLocaleString(), s[2], `${chain(s[3])} → ${chain(s[4])}`, usd(s[5]), s[6] || ""]), (td, v, i) => i === 1 ? statusCell(td, v) : (td.textContent = v));
+}
+
+// ---------- New swap from your own account (fee: 0.40%, half to datablock.near) ----------
+function swapForm(d) {
+  const box = el("div", null, "newswap");
+  box.append(el("h2", "New swap"));
+  const sel = (id, val) => { const s = el("select"); s.id = id; for (const t of ["NEAR", "USDC"]) { const o = el("option", t); o.value = t; s.append(o); } s.value = val; return s; };
+  const from = sel("ns-from", "NEAR"), to = sel("ns-to", "USDC");
+  const amount = el("input"); amount.id = "ns-amount"; amount.inputMode = "decimal"; amount.value = "1"; amount.autocomplete = "off";
+  const lab = (text, input) => { const l = el("label", text + " "); l.htmlFor = input.id; l.append(input); return l; };
+  from.addEventListener("change", () => { to.value = from.value === "NEAR" ? "USDC" : "NEAR"; });
+  to.addEventListener("change", () => { from.value = to.value === "NEAR" ? "USDC" : "NEAR"; });
+  const row = el("div", null, "filters"); row.append(lab("From", from), lab("To", to), lab("Amount", amount)); box.append(row);
+  const result = el("div"); result.setAttribute("aria-live", "polite");
+  const ask = async (dry) => {
+    result.replaceChildren(el("p", dry ? "Getting a quote…" : "Getting a deposit address…", "dim"));
+    const [ok, r] = await post("/api/me/swap", { from: from.value, to: to.value, amount: amount.value.trim(), dry });
+    if (!ok) { result.replaceChildren(el("p", r.error || "Quote failed.", "dim")); return; }
+    const q = r.quote, dl = el("dl");
+    const item = (k, v, cls) => dl.append(el("dt", k), el("dd", v, cls));
+    item("You send", `${q.amountInFormatted ?? amount.value} ${from.value}`);
+    item("You get (about)", `${q.amountOutFormatted ?? "?"} ${to.value}`);
+    item("Fee", `${r.fee.bps / 100}% of what you send: half to ${r.fee.recipient}, half to 1Click`);
+    item("To and refunds", d.account);
+    if (q.deadline) item("Quote valid until", new Date(q.deadline).toUTCString());
+    result.replaceChildren(dl);
+    if (!dry && q.depositAddress) {
+      item("Deposit address", q.depositAddress, "mono");
+      const copy = el("button", "Copy address", "ghost"); copy.type = "button";
+      copy.addEventListener("click", () => navigator.clipboard?.writeText(q.depositAddress).then(() => { copy.textContent = "Copied"; }));
+      result.append(el("p", `Send exactly ${q.amountInFormatted} ${from.value} from ${d.account} to this address before the deadline. Nothing moves until you send.`), copy);
+    }
+  };
+  const preview = el("button", "Preview quote"); preview.type = "button"; preview.addEventListener("click", () => ask(true));
+  const btns = el("p"); btns.append(preview);
+  if (d.swap_live) { const live = el("button", "Get deposit address", "ghost"); live.type = "button"; live.addEventListener("click", () => ask(false)); btns.append(" ", live); }
+  else btns.append(el("span", " Preview only for now: live swaps are off.", "dim small"));
+  box.append(btns, result);
+  if (d.quotes?.length) {
+    box.append(el("h2", "Your swaps from this page"));
+    for (const qq of d.quotes) { const p = el("p", null, "mono small"); p.append(el("strong", qq.address.slice(0, 12) + "… "), qq.line); box.append(p); }
+  }
+  return box;
 }
 
 function telegramRow(tg) {

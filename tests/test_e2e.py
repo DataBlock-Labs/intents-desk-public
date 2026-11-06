@@ -172,6 +172,9 @@ def test_wallet_sign_in_watch_and_sign_out_with_test_wallet(app, page):
     expect(page.locator("#who")).to_have_text("test.near")
     expect(page.locator("#mine-out")).to_contain_text("Balance5 NEAR")
     expect(page.locator("#mine-out")).to_contain_text("refunded to this account")
+    page.click("text=Preview quote")  # new swap: fee shown, preview only
+    expect(page.locator("#mine-out")).to_contain_text("half to datablock.near")
+    expect(page.locator("#mine-out")).to_contain_text("Preview only for now")
     page.fill("#addr", fakes.REFUNDED)
     page.click("#lookup button[type=submit]")
     page.get_by_role("button", name="Watch this swap").click()

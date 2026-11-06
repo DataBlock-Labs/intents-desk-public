@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS app.telegram (
     chat_id BIGINT NOT NULL,
     linked_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS app.quote (
+    deposit_address TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    origin_asset TEXT NOT NULL,
+    destination_asset TEXT NOT NULL,
+    amount_in TEXT NOT NULL,
+    fee_bps INTEGER NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS app.link_code (
     code TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -422,6 +431,31 @@ def watch_list(con, account: str) -> list[str]:
     rows = con.execute(
         "SELECT deposit_address FROM app.watch WHERE account_id = ? ORDER BY added_at",
         [account],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def log_quote(con, account: str, address: str, request: dict, fee_bps: int) -> None:
+    """Keep our own live quote (the deposit address we gave this user): their history."""
+    con.execute(
+        "INSERT OR IGNORE INTO app.quote (deposit_address, account_id, origin_asset,"
+        " destination_asset, amount_in, fee_bps) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            address,
+            account,
+            request["originAsset"],
+            request["destinationAsset"],
+            request["amount"],
+            fee_bps,
+        ],
+    )
+
+
+def quote_list(con, account: str, limit: int = 5) -> list[str]:
+    rows = con.execute(
+        "SELECT deposit_address FROM app.quote WHERE account_id = ?"
+        " ORDER BY created_at DESC LIMIT ?",
+        [account, limit],
     ).fetchall()
     return [r[0] for r in rows]
 

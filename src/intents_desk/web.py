@@ -18,6 +18,7 @@ import threading
 import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
@@ -253,6 +254,74 @@ def swap_again(query: dict) -> tuple[int, dict]:
     return 200, result
 
 
+# New swaps from the signed-in account: two NEAR tokens, small amounts while we test.
+SWAP_ASSETS = {
+    "NEAR": ("nep141:wrap.near", 24),
+    "USDC": (
+        "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+        6,
+    ),
+}
+AMOUNT = re.compile(r"^[0-9]{1,12}(\.[0-9]{1,24})?$")
+
+
+def swap_cap(symbol: str) -> Decimal:
+    # shortcut: test caps (5 NEAR, 20 USDC); raise them before the public launch.
+    return Decimal(
+        os.environ.get(f"SWAP_MAX_{symbol}", "5" if symbol == "NEAR" else "20")
+    )
+
+
+def base_units(amount: str, symbol: str) -> str:
+    """Convert "1.5" NEAR to base units as an integer string. Refuse odd input."""
+    if symbol not in SWAP_ASSETS or not AMOUNT.match(amount):
+        raise ValueError("Use an amount like 1 or 0.5.")
+    decimals = SWAP_ASSETS[symbol][1]
+    value = Decimal(amount)
+    if value <= 0 or value > swap_cap(symbol):
+        raise ValueError(
+            f"Amount must be above 0 and at most {swap_cap(symbol)} {symbol}."
+        )
+    units = value.scaleb(decimals)
+    if units != units.to_integral_value():
+        raise ValueError(f"{symbol} has at most {decimals} decimals.")
+    return str(int(units))
+
+
+def new_swap(account: str, body: dict) -> tuple[int, dict]:
+    """Quote a swap from the signed-in account to itself, with the DataBlock fee.
+
+    Refunds go back to the same account. dry=False (a deposit address) needs SWAP_LIVE=1.
+    """
+    src, dst = str(body.get("from", "")), str(body.get("to", ""))
+    if src not in SWAP_ASSETS or dst not in SWAP_ASSETS or src == dst:
+        return 400, {"error": "Pick two different tokens: NEAR or USDC."}
+    try:
+        amount = base_units(str(body.get("amount", "")).strip(), src)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    dry = body.get("dry", True) is not False
+    if not dry and os.environ.get("SWAP_LIVE") != "1":
+        return 403, {"error": "Preview only for now: no deposit addresses yet."}
+    request = {
+        "originAsset": SWAP_ASSETS[src][0],
+        "destinationAsset": SWAP_ASSETS[dst][0],
+        "amount": amount,
+        "recipient": account,
+        "refundTo": account,
+    }
+    recipient, bps = sources.fee_settings()
+    result = sources.get_quote(request, dry=dry)
+    address = (result.get("quote") or {}).get("depositAddress")
+    if not dry and address:
+        store.log_quote(db(), account, address, request, bps)
+    return 200, {
+        "quote": result.get("quote") or {},
+        "fee": {"recipient": recipient, "bps": bps},
+        "dry": dry,
+    }
+
+
 def account_view(account: str) -> dict:
     """Get the signed-in user's balance, stored swaps and watched swaps."""
     cur = db()
@@ -268,6 +337,11 @@ def account_view(account: str) -> dict:
             "linked": telegram.linked_chat(cur, account) is not None,
         },
         "balance_near": round(yocto / 10**24, 4),
+        "swap_live": os.environ.get("SWAP_LIVE") == "1",
+        "quotes": [
+            {"address": a, "line": swap_view(a, "agent")}
+            for a in store.quote_list(cur, account)
+        ],
         "swaps": store.account_swaps(cur, account),
         "watched": watched,
     }
@@ -574,6 +648,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"linked": False})
             else:
                 self.send_json(200, {"link": telegram.new_link(db(), account)})
+        elif path == "/api/me/swap":
+            account = self.account()
+            if not account:
+                self.send_json(401, {"error": "Not signed in."})
+            else:
+                self.send_json(*new_swap(account, body))
         elif path == "/api/me/watch":
             account = self.account()
             address = str(body.get("address", "")).strip()

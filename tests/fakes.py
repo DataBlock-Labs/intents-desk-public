@@ -5,6 +5,7 @@ Paths: /neardata/v0/..., /explorer/transactions, /oneclick/status|quote, /rpc,
 neardata answers 429 with its real text on every `rate_limit_every`-th block request.
 """
 
+import base64
 import json
 import threading
 from datetime import UTC, datetime, timedelta
@@ -85,6 +86,9 @@ QUOTE = {
 }
 
 
+QUOTES: list[dict] = []  # every quote request body the fake received
+
+
 class Fake:
     def __init__(self, rate_limit_every: int = 0):
         self.rate_limit_every = rate_limit_every
@@ -162,11 +166,22 @@ class Fake:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 p = urlparse(self.path).path
                 if p == "/oneclick/quote":
-                    self.reply(200, QUOTE)
+                    QUOTES.append(body)  # tests read what we sent to 1Click
+                    live = {"depositAddress": f"dep{len(QUOTES):05d}xxxx"}
+                    q = {**QUOTE["quote"], **({} if body.get("dry") else live)}
+                    self.reply(200, {"quote": q})
                 elif p == "/rpc":
                     kind = body["params"]["request_type"]
                     if kind == "view_access_key":
                         result = {"nonce": 1, "permission": "FullAccess"}
+                    elif kind == "call_function":  # intents.near mt_batch_balance_of
+                        ids = json.loads(
+                            base64.b64decode(body["params"]["args_base64"])
+                        )
+                        values = [
+                            str(1000 * (i + 1)) for i in range(len(ids["token_ids"]))
+                        ]
+                        result = {"result": list(json.dumps(values).encode())}
                     else:
                         result = {"amount": str(5 * 10**24)}
                     self.reply(200, {"jsonrpc": "2.0", "id": 1, "result": result})
