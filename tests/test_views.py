@@ -54,6 +54,7 @@ def test_recent_swaps_filters(con):
     assert recent_swaps(con, route="tron → eth", limit=3)[0]["route"] == "tron → eth"
     times = [s["created_at"] for s in recent_swaps(con, limit=10)]
     assert times == sorted(times, reverse=True)
+    assert all(t.endswith("Z") for t in times)  # UTC, whatever the server time zone
 
 
 def test_public_list_has_no_full_address_but_ref_resolves(con, tmp_path, monkeypatch):

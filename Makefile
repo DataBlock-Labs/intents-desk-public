@@ -1,4 +1,4 @@
-.PHONY: setup test fetch stats demo serve sync partners bench thesis fill-sample partner-report ui-check audit backup
+.PHONY: serve-tailnet setup test fetch stats demo serve sync partners bench thesis fill-sample partner-report ui-check audit backup
 
 BLOCKS ?= 200
 HOURS ?= 24
@@ -30,6 +30,14 @@ serve: setup
 	set -a; [ -f "$(KEYS)" ] && . "$(KEYS)"; [ -f "$(TGENV)" ] && . "$(TGENV)"; set +a; \
 	X_BEARER_TOKEN="$$(grep -s '^X_BEARER_TOKEN=' "$(XENV)" | cut -d= -f2- | tr -d '"')" \
 	uv run intents-desk serve --port $(PORT)
+
+# Serve on the tailnet over HTTPS (wallet sign-in needs HTTPS and a matching host).
+# Open https://<this machine>.ts.net:18420 from any tailnet device.
+TS_PORT ?= 18420
+serve-tailnet:
+	tailscale serve --bg --https=$(TS_PORT) http://127.0.0.1:$(PORT)
+	PUBLIC_HOST="$$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'):$(TS_PORT)" \
+	$(MAKE) serve
 
 # Needs INTENTS_EXPLORER_JWT in $(KEYS). About 1 page of 1,000 swaps every 5.5 s.
 sync: setup

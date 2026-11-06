@@ -555,7 +555,7 @@ def recent_swaps(
     rows = con.execute(
         """
         SELECT left(deposit_address, 6) || '…' || right(deposit_address, 4),
-            left(md5($k || deposit_address), 20), CAST(created_at AS VARCHAR), status,
+            left(md5($k || deposit_address), 20), strftime(timezone('UTC', created_at), '%Y-%m-%dT%H:%M:%SZ'), status,
             ops_chain(origin_asset) || ' → ' || ops_chain(destination_asset) AS route,
             amount_in_usd, coalesce(nullif(referral, ''), '(none)') AS partner, refund_reason
         FROM silver.swap
