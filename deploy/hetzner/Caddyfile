@@ -1,5 +1,9 @@
 intents.datablock.pro {
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
-	reverse_proxy app:8420
+	# The app rate-limits by Fly-Client-IP (TRUST_PROXY=1). Always set it from the real
+	# peer, so a client cannot send its own value.
+	reverse_proxy app:8420 {
+		header_up Fly-Client-IP {remote_host}
+	}
 }
