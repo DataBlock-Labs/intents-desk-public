@@ -33,6 +33,7 @@ const cat = (parts) => { const out = new Uint8Array(parts.reduce((n, p) => n + p
 export class NearConnector {
   constructor() { this.handlers = {}; }
   on(name, fn) { (this.handlers[name] ||= []).push(fn); }
+  off(name, fn) { this.handlers[name] = (this.handlers[name] || []).filter((f) => f !== fn); }
   async connect({ signMessageParams: p }) {
     const key = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const pub = new Uint8Array(await crypto.subtle.exportKey("raw", key.publicKey));
@@ -236,3 +237,16 @@ def test_partner_view_and_recent_swaps(app, page):
     page.click("#partner-close")
     expect(page.locator("#partner-view")).to_be_hidden()
     assert page.evaluate("window.__csp || []") == []
+
+
+def test_page_shows_data_when_the_wallet_library_never_loads(app, page):
+    url, faked = app
+    page.route("**/static/near-connect.js", lambda r: r.abort())  # blocked or slow CDN
+    open_page(page, url)
+    expect(page.locator("#pill")).not_to_have_text("Loading network…")
+    rows = page.locator("#swaps tr")
+    if faked:
+        expect(rows.first).to_be_visible()
+        assert rows.count() <= 26  # 25 rows + header first; "Show 100" for more
+        page.click("#swaps-more")
+        expect(page.locator("#swaps-more")).to_be_hidden()

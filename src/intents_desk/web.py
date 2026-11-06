@@ -6,6 +6,7 @@ Two background threads keep the data fresh, so visitors never call a rate-limite
 """
 
 import base64
+import gzip
 import json
 import os
 import re
@@ -364,6 +365,10 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def send(self, code: int, body: bytes, kind: str = "application/json", **hdr):
+        if len(body) > 1024 and "gzip" in self.headers.get("Accept-Encoding", ""):
+            body = gzip.compress(body, 6)  # about 3x smaller for JS, JSON and HTML
+            hdr["Content_Encoding"] = "gzip"
+        hdr["Vary"] = "Accept-Encoding"
         self.send_response(code)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))

@@ -1,4 +1,3 @@
-import { NearConnector } from "/static/near-connect.js";
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
@@ -132,8 +131,9 @@ window.addEventListener("hashchange", showPartner);
 $("partner-close").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showPartner(); });
 
 // ---------- Recent swaps ----------
+let swapLimit = 25;  // a short first table on phones; "Show 100" for more
 async function loadSwaps() {
-  const q = new URLSearchParams({ limit: "100" });
+  const q = new URLSearchParams({ limit: String(swapLimit) });
   for (const [k, id] of [["status", "f-status"], ["partner", "f-partner"], ["route", "f-route"]]) if ($(id).value) q.set(k, $(id).value);
   const [ok, rows] = await getJSON("/api/swaps?" + q);
   if (!ok) { $("swaps-note").textContent = rows.error || "Swaps unavailable"; return; }
@@ -149,6 +149,7 @@ async function loadSwaps() {
     });
 }
 for (const id of ["f-status", "f-partner", "f-route"]) $(id).addEventListener("change", loadSwaps);
+$("swaps-more").addEventListener("click", () => { swapLimit = 100; $("swaps-more").classList.add("hidden"); loadSwaps(); });
 
 // A swap from the public list: the page never gets its full address, only a ref.
 async function lookupRef(ref, short) {
@@ -181,7 +182,10 @@ document.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", ()
 
 // ---------- Wallet sign-in (NEP-413 signed message; no transaction) ----------
 let me = null;
-const nc = new NearConnector({ network: "mainnet", features: { signMessage: true } });
+// The wallet library (61 KB, plus its wallet list and frames) loads after the page shows data.
+let ncPromise = null;
+const connector = () => (ncPromise ??= import("/static/near-connect.js").then(
+  (m) => new m.NearConnector({ network: "mainnet", features: { signMessage: true } })));
 
 function showAccount(account) {
   me = account;
@@ -237,10 +241,14 @@ $("connect").addEventListener("click", async () => {
   try {
     const [, ch] = await getJSON("/api/auth/challenge");
     const params = { message: ch.message, recipient: ch.recipient, nonce: Uint8Array.from(atob(ch.nonce), (c) => c.charCodeAt(0)) };
-    const signedEvent = new Promise((res) => nc.on("wallet:signInAndSignMessage", (e) => res(e.accounts?.[0]?.signedMessage)));
-    const wallet = await nc.connect({ signMessageParams: params });
-    let signed = await Promise.race([signedEvent, new Promise((r) => setTimeout(() => r(null), 1500))]);
-    if (!signed) signed = await wallet.signMessage(params);
+    const nc = await connector();
+    // connect() lists only wallets that sign in and sign the message in one step, and it
+    // emits this event before it returns. So one prompt only: no second signMessage popup.
+    let signed = null;
+    const keep = (e) => { signed = e.accounts?.[0]?.signedMessage ?? null; };
+    nc.on("wallet:signInAndSignMessage", keep);
+    try { await nc.connect({ signMessageParams: params }); } finally { nc.off("wallet:signInAndSignMessage", keep); }
+    if (!signed) throw new Error("The wallet did not return a signed message.");
     const [ok, d] = await post("/api/auth/verify", { signed, nonce: ch.nonce });
     if (!ok) throw new Error(d.error || "Sign-in failed.");
     await loadMine();
@@ -251,7 +259,7 @@ $("connect").addEventListener("click", async () => {
 
 $("signout").addEventListener("click", async () => {
   await post("/api/auth/logout", {});
-  try { await nc.disconnect(); } catch { /* no wallet session */ }
+  try { if (ncPromise) await (await ncPromise).disconnect(); } catch { /* no wallet session */ }
   showAccount(null);
   $("mine-out").replaceChildren(el("p", "Signed out.", "dim"));
 });
@@ -259,7 +267,10 @@ $("signout").addEventListener("click", async () => {
 loadHealth().catch((e) => { $("pill").textContent = "Could not load: " + e; });
 loadFeed();
 loadMine();
-setInterval(loadHealth, 60000);
 loadSwaps();
-setInterval(loadSwaps, 60000);
+const whenVisible = (fn) => () => { if (!document.hidden) fn(); };  // no polling in a background tab
+setInterval(whenVisible(loadHealth), 60000);
+setInterval(whenVisible(loadSwaps), 60000);
+document.addEventListener("visibilitychange", whenVisible(() => { loadHealth(); loadSwaps(); }));
+(window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => connector().catch(() => {}));
 showPartner();

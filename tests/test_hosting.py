@@ -80,3 +80,25 @@ def test_summary_without_data_or_key_is_empty_not_an_error(tmp_path, monkeypatch
     monkeypatch.setattr(web, "_db", {"con": connect(tmp_path / "t.duckdb")})
     web._cache.update(at=0.0, data=None)
     assert web.get_summary()["swaps"] == 0
+
+
+def test_large_replies_are_gzipped_only_when_asked(monkeypatch):
+    import gzip
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}/static/near-connect.js"
+    try:
+        req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(req) as r:
+            assert r.headers["Content-Encoding"] == "gzip"
+            zipped = r.read()
+        with urllib.request.urlopen(url) as r:  # no Accept-Encoding: plain bytes
+            assert r.headers["Content-Encoding"] is None
+            plain = r.read()
+        assert gzip.decompress(zipped) == plain and len(zipped) < len(plain) / 2
+    finally:
+        server.shutdown()
