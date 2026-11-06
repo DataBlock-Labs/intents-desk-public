@@ -185,7 +185,8 @@ let me = null;
 // The wallet library (61 KB, plus its wallet list and frames) loads after the page shows data.
 let ncPromise = null;
 const connector = () => (ncPromise ??= import("/static/near-connect.js").then(
-  (m) => new m.NearConnector({ network: "mainnet", features: { signMessage: true } })));
+  (m) => new m.NearConnector({ network: "mainnet", features: { signMessage: true },
+    cspNonce: document.querySelector("script[nonce]")?.nonce })));  // wallet code runs inline
 
 function showAccount(account) {
   me = account;
@@ -236,6 +237,11 @@ function watchButton(address, on = true) {
   return b;
 }
 
+// Show page errors on screen: phones have no console to read.
+for (const ev of ["error", "unhandledrejection"]) window.addEventListener(ev, (e) => {
+  const msg = e.reason?.message || e.message || String(e.reason || "unknown error");
+  $("mine-out").append(el("p", "Page error: " + msg, "dim"));
+});
 let signingIn = false;
 $("connect").addEventListener("click", async () => {
   const btn = $("connect");
@@ -245,7 +251,10 @@ $("connect").addEventListener("click", async () => {
   try {
     const [, ch] = await getJSON("/api/auth/challenge");
     const params = { message: ch.message, recipient: ch.recipient, nonce: Uint8Array.from(atob(ch.nonce), (c) => c.charCodeAt(0)) };
+    const step = (t) => $("mine-out").replaceChildren(el("p", t, "dim"));
+    step("Loading the wallet list…");
     const nc = await connector();
+    step("Pick a wallet in the list. It opens your wallet to sign one message (no fee).");
     // connect() lists only wallets that sign in and sign the message in one step, and it
     // emits this event before it returns. So one prompt only: no second signMessage popup.
     let signed = null;

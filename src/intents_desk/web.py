@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -54,6 +55,26 @@ CSP = (
     " blob: data:; object-src 'none'; base-uri 'none'; form-action 'self';"
     " frame-ancestors 'none'"
 )
+
+
+def page_csp(nonce: str) -> str:
+    """Get the policy for the page itself.
+
+    NEAR Connect runs wallet code as inline scripts in srcdoc iframes, which inherit
+    this policy: they need the nonce. Wallet bridges use websockets (wss:), and wallet
+    panels load fonts and stylesheets from their own hosts.
+    """
+    return (
+        CSP.replace("script-src 'self'", f"script-src 'self' 'nonce-{nonce}'")
+        .replace("connect-src 'self' https:", "connect-src 'self' https: wss:")
+        .replace(
+            "style-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline' https:",
+        )
+        + "; font-src 'self' data: https:"
+    )
+
+
 _cache: dict = {"at": 0.0, "data": None}
 _lock = threading.Lock()
 _db: dict = {"con": None}
@@ -63,7 +84,7 @@ _status: dict = {"synced_at": None, "feed_at": None, "feed_sources": []}
 TOKENS_LINK = b'<link rel="stylesheet" href="/static/tokens.css">'
 
 
-def page_html() -> bytes:
+def page_html(nonce: str = "") -> bytes:
     """Get index.html with tokens.css and the two logos inlined (bytes unchanged).
 
     This saves three requests and the render-blocking stylesheet.
@@ -80,6 +101,14 @@ def page_html() -> bytes:
     app = pkg.joinpath("static/app.js").read_bytes()  # new code reaches phones at once
     version = hashlib.sha256(app).hexdigest()[:10].encode()
     page = page.replace(b'"/static/app.js"', b'"/static/app.js?v=' + version + b'"', 1)
+    if (
+        nonce
+    ):  # the page's own script carries the nonce; app.js hands it to NEAR Connect
+        page = page.replace(
+            b'<script type="module"',
+            f'<script type="module" nonce="{nonce}"'.encode(),
+            1,
+        )
     return page
 
 
@@ -378,7 +407,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Content-Security-Policy", hdr.pop("csp", CSP))
         if not auth.PUBLIC_HOST.startswith(("localhost", "127.0.0.1")):
             self.send_header("Strict-Transport-Security", "max-age=31536000")
         for name, value in hdr.items():
@@ -410,7 +439,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_get(self, path: str, q: dict) -> None:
         if path == "/":
-            self.send(200, page_html(), "text/html; charset=utf-8")
+            nonce = base64.b64encode(secrets.token_bytes(16)).decode()  # fresh per page
+            self.send(
+                200, page_html(nonce), "text/html; charset=utf-8", csp=page_csp(nonce)
+            )
         elif path in STATIC:  # fixed allow-list: no path from the URL reaches disk
             body = files("intents_desk").joinpath(path.lstrip("/")).read_bytes()
             self.send(200, body, STATIC[path], Cache_Control="max-age=3600")

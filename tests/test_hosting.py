@@ -112,3 +112,29 @@ def test_page_names_app_js_by_version_so_phones_get_new_code():
     app = files("intents_desk").joinpath("static/app.js").read_bytes()
     found = re.findall(rb'/static/app\.js\?v=([0-9a-f]{10})"', web.page_html())
     assert found == [hashlib.sha256(app).hexdigest()[:10].encode()]
+
+
+def test_page_gets_a_fresh_nonce_and_json_keeps_the_strict_policy():
+    import re
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        nonces = []
+        for _ in range(2):
+            with urllib.request.urlopen(base + "/") as r:
+                csp, body = r.headers["Content-Security-Policy"], r.read()
+            n = re.search(r"'nonce-([A-Za-z0-9+/=]{24})'", csp).group(1)
+            assert f'<script type="module" nonce="{n}"'.encode() in body
+            assert "wss:" in csp and "frame-ancestors 'none'" in csp
+            nonces.append(n)
+        assert nonces[0] != nonces[1]
+        with urllib.request.urlopen(base + "/static/tokens.css") as r:
+            strict = r.headers["Content-Security-Policy"]
+        assert strict == web.CSP and "nonce" not in strict and "wss:" not in strict
+    finally:
+        server.shutdown()

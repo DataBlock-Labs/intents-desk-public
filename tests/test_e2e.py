@@ -211,6 +211,13 @@ def test_real_wallet_picker_opens(app, page):
     page.click("#connect")
     expect(page.get_by_text("Select wallet")).to_be_visible(timeout=15000)
     assert page.evaluate("window.__csp || []") == []
+    # Pick a web wallet: its code runs inline in a srcdoc iframe under our policy.
+    with page.context.expect_page(timeout=20000) as login:
+        page.get_by_text("MyNearWallet", exact=True).first.click()
+        page.wait_for_timeout(3000)
+    assert "mynearwallet" in login.value.url or login.value.url == "about:blank"
+    blocked = [e for e in page.errors if "Content Security Policy" in e]
+    assert blocked == []
 
 
 def test_partner_view_and_recent_swaps(app, page):
