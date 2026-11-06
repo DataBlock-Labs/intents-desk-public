@@ -121,6 +121,41 @@ def db():
     return _db["con"].cursor()
 
 
+def mask_partner(partner: str) -> str:
+    """Give a stable public alias for a referral id when MASK_PARTNERS=1.
+
+    Partner names stay private until the partner has been told (AGENTS.md).
+    """
+    if os.environ.get("MASK_PARTNERS") != "1" or partner == "(none)":
+        return partner
+    key = store._ref_secret() + partner
+    return "partner-" + hashlib.sha256(key.encode()).hexdigest()[:6]
+
+
+def unmask_partner(alias: str) -> str | None:
+    """Find the referral id behind a public alias. None when no partner matches."""
+    if os.environ.get("MASK_PARTNERS") != "1" or alias == "(none)":
+        return alias
+    rows = (
+        db()
+        .execute(
+            "SELECT DISTINCT coalesce(nullif(referral, ''), '(none)') FROM silver.swap"
+        )
+        .fetchall()
+    )
+    return next((p for (p,) in rows if mask_partner(p) == alias), None)
+
+
+def partner_rows() -> list[list]:
+    """The partner table: the hourly alert rule, plus a daily rule for slow failures."""
+    rows = [list(r) for r in store.partner_report(db(), 1, 50, 50).fetchall()[:15]]
+    daily = {r[0] for r in store.partner_report(db(), 24, 100, 20).fetchall() if r[7]}
+    for r in rows:
+        r[7] = bool(r[7]) or r[0] in daily
+        r[0] = mask_partner(r[0])
+    return rows
+
+
 def chain_of(asset: str) -> str:
     """Get a short chain name from a 1Click asset id, e.g. nep141:tron-…omft.near."""
     if asset.startswith("1cs_v1:"):  # e.g. 1cs_v1:btc:native:coin
@@ -609,6 +644,16 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, RuntimeError) as exc:  # HTTP, JSON, retries.
             self.send_json(502, {"error": f"{type(exc).__name__}: {exc}"})
 
+    def from_page(self) -> bool:
+        """True for a fetch from our own page, or when BROWSER_ONLY is not 1.
+
+        shortcut: a header check stops reuse as an API, not a client that fakes headers;
+        move to a signed page token if someone does that.
+        """
+        if os.environ.get("BROWSER_ONLY") != "1":
+            return True
+        return self.headers.get("Sec-Fetch-Site") == "same-origin"
+
     def route_get(self, path: str, q: dict) -> None:
         if path == "/":
             nonce = base64.b64encode(secrets.token_bytes(16)).decode()  # fresh per page
@@ -621,14 +666,17 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/summary":
             self.send_json(200, {**get_summary(), **_status})
         elif path == "/api/partners":
-            rows = store.partner_report(db(), 1, 50, 50).fetchall()
-            self.send_json(200, rows[:15])
+            self.send_json(200, partner_rows())
         elif path == "/api/partner":
-            partner = q.get("id", [""])[0]
-            if not PARTNER.match(partner):
+            alias = q.get("id", [""])[0]
+            partner = unmask_partner(alias) if PARTNER.match(alias) else None
+            if not PARTNER.match(alias):
                 self.send_json(400, {"error": "Not a valid partner id."})
+            elif partner is None:
+                self.send_json(404, {"error": "Partner not found."})
             else:
-                self.send_json(200, store.partner_detail(db(), partner))
+                detail = store.partner_detail(db(), partner)
+                self.send_json(200, {**detail, "partner": alias})
         elif path == "/api/swaps":
             status = q.get("status", [None])[0] or None
             partner = q.get("partner", [None])[0] or None
@@ -643,16 +691,22 @@ class Handler(BaseHTTPRequestHandler):
                 or (route and not ROUTE.match(route))
             ):
                 self.send_json(400, {"error": "Bad filter."})
+            elif partner and (partner := unmask_partner(partner)) is None:
+                self.send_json(200, [])
             else:
-                self.send_json(
-                    200, store.recent_swaps(db(), status, partner, route, limit)
-                )
+                rows = store.recent_swaps(db(), status, partner, route, limit)
+                for r in rows:
+                    r["partner"] = mask_partner(r["partner"])
+                self.send_json(200, rows)
         elif path == "/api/hourly":
             self.send_json(200, store.hourly_refunds(db(), 24))
         elif path == "/api/feed":
             tag = q.get("tag", [None])[0]
             tag = tag if tag in sources.FEED_TERMS else None
             self.send_json(200, {"posts": store.read_feed(db(), tag), **_status})
+        elif path in ("/api/swap", "/api/quote") and not self.from_page():
+            # 1Click terms 4.1(a): no public API, proxy or wrapper over 1Click.
+            self.send_json(403, {"error": "Use the page, or the 1Click API directly."})
         elif path in ("/api/swap", "/api/quote"):
             address = q.get("address", [""])[0].strip()
             ref = q.get("ref", [""])[0]

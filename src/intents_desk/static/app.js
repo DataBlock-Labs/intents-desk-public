@@ -88,7 +88,7 @@ async function loadHealth() {
   table($("reasons"), [["Reason"], ["Refunds", 1]], d.refund_reasons.map(([r, c]) => [r, fmt(c)]));
   table($("routes"), [["From → to"], ["Swaps", 1], ["Refunded", 1]], d.routes.map(([r, c, p]) => [r, fmt(c), p + "%"]));
   const [, parts] = await getJSON("/api/partners");
-  table($("partners"), [["Partner"], ["Swaps", 1], ["Refunded", 1], ["Lost $", 1]], (parts || []).map((p) => [p, p[1], p[2], p[3]]), (td, v, i, row) => {
+  table($("partners"), [["Partner"], ["Swaps", 1], ["Refunded", 1], ["Refunded $", 1]], (parts || []).map((p) => [p, p[1], p[2], p[3]]), (td, v, i, row) => {
     if (i === 0) { const p = row[0]; if (p[7]) td.append(el("span", "ALERT", "alert"), " ");
       const a = el("a", p[0].length > 34 ? p[0].slice(0, 32) + "…" : p[0], "small"); a.href = "#partner=" + encodeURIComponent(p[0]); a.title = "Open the partner view for " + p[0]; td.append(a); }
     else td.textContent = i === 1 ? fmt(v) : i === 2 ? v + "%" : usd(v);

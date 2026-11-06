@@ -135,3 +135,50 @@ def test_ref_lookup_reply_has_no_addresses(base, con, monkeypatch, tmp_path):
         assert leaked not in blob
     assert get(base + "/api/swap?ref=" + "0" * 20)[0] == 404
     assert get(base + "/api/quote?ref=" + ref)[0] == 400  # quotes need the real address
+
+
+def test_masked_partners_round_trip(base, monkeypatch, tmp_path):
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "s.key"))
+    monkeypatch.setenv("MASK_PARTNERS", "1")
+    alias = web.mask_partner("widget-x:pda")
+    assert alias.startswith("partner-") and "widget" not in alias
+    code, d = get(base + "/api/partner?id=" + alias)
+    assert code == 200 and d["swaps_24h"] == 60 and d["partner"] == alias
+    code, rows = get(base + "/api/swaps?partner=" + alias)
+    assert code == 200 and rows and {r["partner"] for r in rows} == {alias}
+    assert get(base + "/api/partner?id=partner-000000")[0] == 404
+    code, rows = get(base + "/api/partners")
+    assert code == 200 and all("widget" not in r[0] for r in rows)
+
+
+def test_swap_api_only_from_page(base, monkeypatch):
+    monkeypatch.setenv("BROWSER_ONLY", "1")
+    assert get(base + "/api/swap?address=abc")[0] == 403
+    assert get(base + "/api/quote?address=abc")[0] == 403
+    req = urllib.request.Request(
+        base + "/api/swap?address=abc", headers={"Sec-Fetch-Site": "same-origin"}
+    )
+    try:
+        code = urllib.request.urlopen(req).status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    assert code == 400  # past the gate; a bad address, so no 1Click call
+
+
+def test_daily_rule_flags_slow_failure(monkeypatch):
+    class Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    hourly = [("slow-app", 10, 60.0, 5, 3, "X", "t", False)]
+    daily = [("slow-app", 400, 66.9, 900, 50, "X", "t", True)]
+    monkeypatch.setattr(web, "db", lambda: None)
+    monkeypatch.setattr(
+        web.store,
+        "partner_report",
+        lambda con, h, n, p: Rows(daily if h == 24 else hourly),
+    )
+    assert web.partner_rows()[0][7] is True

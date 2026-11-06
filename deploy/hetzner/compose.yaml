@@ -1,0 +1,26 @@
+# Intents Desk on Hetzner: the app is reachable only through Caddy (HTTPS).
+services:
+  app:
+    build: ./src  # git archive of the commit to deploy
+    image: intents-desk:live
+    restart: unless-stopped
+    env_file: desk.env
+    volumes: [desk_data:/data]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1536m
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+volumes:
+  desk_data:
+  caddy_data:
+  caddy_config:

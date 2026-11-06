@@ -11,5 +11,7 @@ RUN uv sync --locked --no-dev \
     && mkdir -p /data && chown desk /data
 USER desk
 ENV PATH="/app/.venv/bin:$PATH" HOST=0.0.0.0 TRUST_PROXY=1 SESSION_KEY_FILE=/data/session.key
+# Public deploy: partner aliases, and /api/swap and /api/quote only from our page.
+ENV MASK_PARTNERS=1 BROWSER_ONLY=1
 EXPOSE 8420
 CMD ["intents-desk", "--db", "/data/desk.duckdb", "serve", "--port", "8420"]
