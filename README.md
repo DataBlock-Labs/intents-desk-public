@@ -192,6 +192,27 @@ keeping them.
   watched swaps, `/stop` unlinks. To enable on a server, create a bot with @BotFather and set
   `TELEGRAM_BOT_TOKEN` (`make serve` reads `~/.config/intents-desk/telegram.env`).
 
+## Swaps, recovery and fees
+
+- **New swap** (after wallet sign-in): NEAR ↔ USDC on NEAR, paid to your own account, with
+  refunds back to it. Press **Send from your wallet** and your wallet asks you to approve
+  one transfer to the 1Click deposit address. The page takes the address and amount from
+  the quote, and the server never holds keys or funds.
+- **Recover a refund at today's price:** look up a refunded swap whose refund came back to
+  your NEAR account. The page shows then-versus-today and re-runs the swap to the same
+  recipient, sent from your wallet.
+- **Fee:** 0.40% of what you send, split 50/50 with 1Click (0.20% to `datablock.near`). Every
+  quote carries `referral=intents-desk`, so the Intents Explorer can count our swaps.
+- **Limits while testing:** $25 per swap (`SWAP_MAX_USD`). Live deposit addresses need
+  `SWAP_LIVE=1`.
+- **Revenue:** every 5 minutes the server settles its own quotes (`app.quote`). On SUCCESS
+  it records our share of the fee in USD; `ops.daily_revenue` sums it per day.
+  `uv run intents-desk revenue` prints the totals and checks them against the Explorer.
+  `uv run intents-desk fees` shows where the fees land (the wallet, or a balance inside
+  `intents.near`).
+- **Solver budget rule:** the solver lab may only risk what Intents Desk has earned (the
+  `revenue` total). Nothing moves on its own; a person signs every transfer.
+
 ## Operations audit
 
 Every job (sync, feed, fetch, rollup, thesis, backup) writes a row to `ops.run_log`: start,

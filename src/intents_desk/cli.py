@@ -254,6 +254,28 @@ def cmd_fees(args) -> None:
         print(f"{account} in intents.near: {n / 10**decimals:.6f} {symbol} ({n})")
 
 
+def cmd_revenue(args) -> None:
+    """Fees earned per day (ops.daily_revenue), and a check against the Explorer."""
+    con = connect(args.db)
+    print(con.sql("SELECT * FROM ops.daily_revenue ORDER BY day"))
+    total = con.execute("SELECT coalesce(sum(fee_usd), 0) FROM ops.daily_revenue")
+    print(f"total fees earned: ${total.fetchone()[0]:.4f} (the solver budget)")
+    ours = {
+        r[0]
+        for r in con.execute(
+            "SELECT deposit_address FROM app.quote WHERE status = 'SUCCESS'"
+        ).fetchall()
+    }
+    if os.environ.get("INTENTS_EXPLORER_JWT"):
+        referral = os.environ.get("REFERRAL_ID", "intents-desk")
+        seen = sources.get_explorer_txs(numberOfTransactions=1000, referral=referral)
+        found = {t["depositAddress"] for t in seen if t.get("status") == "SUCCESS"}
+        print(
+            f"Explorer referral={referral}: {len(found)} successful swaps;"
+            f" ours not in the Explorer: {len(ours - found)}"
+        )
+
+
 def cmd_serve(args) -> None:
     """Run the local dashboard."""
     from .web import serve
@@ -319,6 +341,9 @@ def main() -> None:
     p = sub.add_parser("fees", help="fee account balances (wallet + intents.near)")
     p.add_argument("--account", help="default: FEE_RECIPIENT (datablock.near)")
     p.set_defaults(func=cmd_fees)
+    sub.add_parser("revenue", help="fees earned per day + Explorer check").set_defaults(
+        func=cmd_revenue
+    )
     p = sub.add_parser("serve", help="run the local dashboard")
     p.add_argument("--port", type=int, default=8420)
     p.set_defaults(func=cmd_serve)

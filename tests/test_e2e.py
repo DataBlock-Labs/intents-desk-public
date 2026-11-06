@@ -7,6 +7,7 @@ ed25519 key and signs the real NEP-413 message with WebCrypto, so the full sign-
 """
 
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -42,7 +43,14 @@ export class NearConnector {
     const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, digest));
     const signedMessage = { accountId: "test.near", publicKey: "ed25519:" + b58(pub), signature: btoa(String.fromCharCode(...sig)) };
     for (const fn of this.handlers["wallet:signInAndSignMessage"] || []) fn({ accounts: [{ accountId: "test.near", signedMessage }] });
-    return { signMessage: async () => signedMessage };
+    return this.wallet();
+  }
+  async wallet() {  // the connected wallet: records what the page asks it to send
+    return {
+      getAccounts: async () => [{ accountId: "test.near" }],
+      signAndSendTransaction: async (tx) => { (window.__sent ||= []).push(tx);
+        return { transaction: { hash: "8kY6pnEhGKNrDhX8kCWt8rfm8ZRZx4yNHjDSU7r1vAZt" } }; },
+    };
   }
   async disconnect() {}
 }
@@ -57,12 +65,8 @@ def free_port() -> int:
     return port
 
 
-@pytest.fixture(scope="module")
-def app(tmp_path_factory):
-    """The app at BASE_URL, or a local process against the fake APIs."""
-    if os.environ.get("BASE_URL"):
-        yield os.environ["BASE_URL"].rstrip("/"), False
-        return
+def run_app(tmp_path_factory, **extra):
+    """Start the app as a process against the fake APIs; yield its URL."""
     fake = fakes.Fake()
     base = fake.start()
     tmp = tmp_path_factory.mktemp("e2e")
@@ -72,6 +76,7 @@ def app(tmp_path_factory):
         **fakes.env(base),
         "SESSION_KEY_FILE": str(tmp / "s.key"),
         "PUBLIC_HOST": f"127.0.0.1:{port}",
+        **extra,
     }
     proc = subprocess.Popen(
         [
@@ -103,6 +108,21 @@ def app(tmp_path_factory):
     proc.terminate()
     proc.wait(timeout=10)
     fake.stop()
+
+
+@pytest.fixture(scope="module")
+def app(tmp_path_factory):
+    """The app at BASE_URL, or a local process against the fake APIs."""
+    if os.environ.get("BASE_URL"):
+        yield os.environ["BASE_URL"].rstrip("/"), False
+        return
+    yield from run_app(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def live_app(tmp_path_factory):
+    """The app with live swaps on (SWAP_LIVE=1), against the fake APIs."""
+    yield from run_app(tmp_path_factory, SWAP_LIVE="1")
 
 
 @pytest.fixture
@@ -260,3 +280,56 @@ def test_page_shows_data_when_the_wallet_library_never_loads(app, page):
         assert rows.count() <= 26  # 25 rows + header first; "Show 100" for more
         page.click("#swaps-more")
         expect(page.locator("#swaps-more")).to_be_hidden()
+
+
+def sign_in_with_test_wallet(page, url):
+    page.route(
+        "**/static/near-connect.js",
+        lambda r: r.fulfill(
+            status=200, content_type="text/javascript", body=TEST_WALLET_JS
+        ),
+    )
+    open_page(page, url)
+    page.click("#connect")
+    expect(page.locator("#who")).to_have_text("test.near")
+
+
+def test_new_swap_sends_the_deposit_from_the_wallet(live_app, page):
+    url, _ = live_app
+    sign_in_with_test_wallet(page, url)
+    page.fill("#ns-amount", "1")
+    page.click("text=Get deposit address")
+    page.get_by_role("button", name="Send 1 NEAR from your wallet").click()
+    expect(page.get_by_role("button", name="Sent")).to_be_visible()
+    sent = page.evaluate("window.__sent")
+    assert sent[0]["receiverId"].startswith("dep")  # the deposit address of our quote
+    assert sent[0]["actions"] == [
+        {"type": "Transfer", "params": {"deposit": str(10**24)}}
+    ]
+    # USDC from the account: register the deposit account, then ft_transfer to it
+    page.select_option("#ns-from", "USDC")
+    page.fill("#ns-amount", "2")
+    page.click("text=Get deposit address")
+    page.get_by_role("button", name=re.compile(r"^Send .* from your wallet")).click()
+    page.wait_for_function("(window.__sent || []).length === 2")
+    usdc = page.evaluate("window.__sent")[1]
+    assert usdc["receiverId"] == fakes.USDC_NEAR.removeprefix("nep141:")
+    calls = [a["params"]["methodName"] for a in usdc["actions"]]
+    assert calls == ["storage_deposit", "ft_transfer"]
+    assert usdc["actions"][1]["params"]["args"]["amount"] == "2000000"
+    assert page.errors == []
+
+
+def test_recover_a_refund_at_todays_price(live_app, page):
+    url, _ = live_app
+    sign_in_with_test_wallet(page, url)
+    page.fill("#addr", fakes.NEAR_REFUNDED)
+    page.click("#lookup button[type=submit]")
+    page.click("text=Price it again today")
+    expect(page.locator("#swap")).to_contain_text("Then you were quoted")
+    expect(page.locator("#swap")).to_contain_text("vs then")
+    page.click("text=Recover at today's price")
+    page.get_by_role("button", name=re.compile(r"^Send .* from your wallet")).click()
+    sent = page.evaluate("window.__sent")
+    assert sent[-1]["actions"][0]["params"]["deposit"] == str(2 * 10**24)
+    assert page.errors == []

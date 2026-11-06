@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 FIXTURES = Path(__file__).parent / "fixtures"
 HEAD = 1000
 REFUNDED = "TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq"
+NEAR_REFUNDED = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 USDT_TRON = "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near"
 USDT_ETH = "nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near"
 
@@ -72,6 +73,33 @@ STATUS = {
         "quote": {"amountInFormatted": "15007.0", "amountInUsd": "14996.39"},
     },
 }
+# A refunded NEAR -> USDC swap whose refund came back to test.near (for Recover).
+NEAR_STATUS = {
+    "status": "REFUNDED",
+    "updatedAt": "2026-11-05T10:00:00.000Z",
+    "swapDetails": {
+        "refundedAmount": str(2 * 10**24),
+        "refundedAmountFormatted": "2",
+        "refundReason": "QUOTE_EXPIRED",
+    },
+    "quoteResponse": {
+        "quoteRequest": {
+            "depositType": "ORIGIN_CHAIN",
+            "originAsset": "nep141:wrap.near",
+            "destinationAsset": "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+            "amount": str(2 * 10**24),
+            "recipient": "test.near",
+            "recipientType": "DESTINATION_CHAIN",
+            "refundTo": "test.near",
+            "refundType": "ORIGIN_CHAIN",
+        },
+        "quote": {
+            "amountInFormatted": "2",
+            "amountOutFormatted": "7.10",
+            "amountOutUsd": "7.10",
+        },
+    },
+}
 QUOTE = {
     "quote": {
         "amountIn": "15007000000",
@@ -87,6 +115,9 @@ QUOTE = {
 
 
 QUOTES: list[dict] = []  # every quote request body the fake received
+SUBMITTED: list[dict] = []  # every deposit/submit body
+USDC_NEAR = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+PRICES = {"nep141:wrap.near": 3.73e-24, USDC_NEAR: 1e-6}
 
 
 class Fake:
@@ -138,6 +169,8 @@ class Fake:
                 elif p == "/oneclick/status":
                     if q.get("depositAddress", [""])[0] == REFUNDED:
                         self.reply(200, STATUS)
+                    elif q.get("depositAddress", [""])[0] == NEAR_REFUNDED:
+                        self.reply(200, NEAR_STATUS)
                     else:
                         self.reply(404, {"message": "Deposit address not found"})
                 elif p == "/x/search":
@@ -169,7 +202,17 @@ class Fake:
                     QUOTES.append(body)  # tests read what we sent to 1Click
                     live = {"depositAddress": f"dep{len(QUOTES):05d}xxxx"}
                     q = {**QUOTE["quote"], **({} if body.get("dry") else live)}
+                    price = PRICES.get(body.get("originAsset"))  # USD per base unit
+                    if price is not None:  # 0 means 1Click has no USD price
+                        usd = int(body["amount"]) * price
+                        q["amountInUsd"] = str(usd) if price else None
+                        q["amountIn"] = body["amount"]
+                        unit = 10**24 if "wrap.near" in body["originAsset"] else 10**6
+                        q["amountInFormatted"] = f"{int(body['amount']) / unit:g}"
                     self.reply(200, {"quote": q})
+                elif p == "/oneclick/deposit/submit":
+                    SUBMITTED.append(body)
+                    self.reply(200, {"status": "PENDING_DEPOSIT"})
                 elif p == "/rpc":
                     kind = body["params"]["request_type"]
                     if kind == "view_access_key":

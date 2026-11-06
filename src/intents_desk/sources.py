@@ -156,7 +156,10 @@ def get_quote(request: dict, dry: bool = True, retries: int = 1) -> dict:
         "swapType": "EXACT_INPUT",
         "slippageTolerance": 100,
         "depositType": "ORIGIN_CHAIN",
-        "recipientType": "DESTINATION_CHAIN",
+        # A recovery keeps the original recipient type; INTENTS means an intents.near balance.
+        "recipientType": "INTENTS"
+        if request.get("recipientType") == "INTENTS"
+        else "DESTINATION_CHAIN",
         "refundType": "ORIGIN_CHAIN",
         "deadline": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
         **{
@@ -176,6 +179,12 @@ def get_quote(request: dict, dry: bool = True, retries: int = 1) -> dict:
     if bps > 0:
         body["appFees"] = [{"recipient": recipient, "fee": bps}]
     return get_json(f"{ONECLICK}/quote", body, retries=retries)
+
+
+def submit_deposit(address: str, tx_hash: str, sender: str) -> dict:
+    """Tell 1Click the deposit is sent (optional; it makes the swap start sooner)."""
+    body = {"depositAddress": address, "txHash": tx_hash, "nearSenderAccount": sender}
+    return get_json(f"{ONECLICK}/deposit/submit", body, retries=1)
 
 
 def rpc_query(params: dict) -> dict | None:

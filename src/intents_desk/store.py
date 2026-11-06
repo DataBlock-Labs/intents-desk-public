@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS app.quote (
     fee_bps INTEGER NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'swap';
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS tx_hash TEXT;
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS amount_in_usd DOUBLE;
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS fee_bps_ours INTEGER;
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS fee_usd DOUBLE;
+ALTER TABLE app.quote ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS app.link_code (
     code TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -143,6 +150,12 @@ def connect(path: str | Path = "data/desk.duckdb") -> duckdb.DuckDBPyConnection:
     from .ops import ensure  # the shared operations audit tables
 
     ensure(con)
+    con.execute(  # fees earned per day; other DataBlock products read the same view
+        "CREATE VIEW IF NOT EXISTS ops.daily_revenue AS"
+        " SELECT CAST(settled_at AS DATE) AS day, count(*) AS swaps,"
+        " sum(amount_in_usd) AS volume_usd, sum(fee_usd) AS fee_usd"
+        " FROM app.quote WHERE status = 'SUCCESS' GROUP BY ALL"
+    )
     return con
 
 
@@ -435,11 +448,13 @@ def watch_list(con, account: str) -> list[str]:
     return [r[0] for r in rows]
 
 
-def log_quote(con, account: str, address: str, request: dict, fee_bps: int) -> None:
+def log_quote(
+    con, account: str, address: str, request: dict, fee_bps: int, kind: str = "swap"
+) -> None:
     """Keep our own live quote (the deposit address we gave this user): their history."""
     con.execute(
         "INSERT OR IGNORE INTO app.quote (deposit_address, account_id, origin_asset,"
-        " destination_asset, amount_in, fee_bps) VALUES (?, ?, ?, ?, ?, ?)",
+        " destination_asset, amount_in, fee_bps, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
             address,
             account,
@@ -447,7 +462,58 @@ def log_quote(con, account: str, address: str, request: dict, fee_bps: int) -> N
             request["destinationAsset"],
             request["amount"],
             fee_bps,
+            kind,
         ],
+    )
+
+
+def live_quotes_today(con, account: str) -> int:
+    return con.execute(
+        "SELECT count(*) FROM app.quote WHERE account_id = ?"
+        " AND created_at > now() - INTERVAL 1 DAY",
+        [account],
+    ).fetchone()[0]
+
+
+def quote_owner(con, address: str) -> str | None:
+    row = con.execute(
+        "SELECT account_id FROM app.quote WHERE deposit_address = ?", [address]
+    ).fetchone()
+    return row[0] if row else None
+
+
+def set_quote_tx(con, address: str, tx_hash: str) -> None:
+    con.execute(
+        "UPDATE app.quote SET tx_hash = ? WHERE deposit_address = ?", [tx_hash, address]
+    )
+
+
+FINAL = ("SUCCESS", "REFUNDED", "FAILED")
+
+
+def open_quotes(con, limit: int = 100) -> list[str]:
+    """Our quotes that are not final yet, oldest first."""
+    rows = con.execute(
+        "SELECT deposit_address FROM app.quote"
+        " WHERE coalesce(status, '') NOT IN ('SUCCESS', 'REFUNDED', 'FAILED')"
+        # sent deposits until final; unpaid quotes only for an hour (deadline 30 min)
+        " AND (tx_hash IS NOT NULL OR created_at > now() - INTERVAL 1 HOUR)"
+        " ORDER BY created_at LIMIT ?",
+        [limit],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def settle_quote(
+    con, address: str, status: str, usd: float | None, bps: int | None
+) -> None:
+    """Record a quote's status; on SUCCESS also our fee in USD (amount in x our bps)."""
+    fee = round((usd or 0) * (bps or 0) / 10_000, 6) if status == "SUCCESS" else 0.0
+    con.execute(
+        "UPDATE app.quote SET status = ?, amount_in_usd = ?, fee_bps_ours = ?,"
+        " fee_usd = ?, settled_at = CASE WHEN ? IN ('SUCCESS', 'REFUNDED', 'FAILED')"
+        " THEN now() END WHERE deposit_address = ?",
+        [status, usd, bps, fee, status, address],
     )
 
 

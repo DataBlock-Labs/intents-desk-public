@@ -38,6 +38,7 @@ MAX_SYNC_HOURS = 24  # first run, or after a long downtime
 RATE_PER_MIN = 30  # per client IP, for the routes in RATE_LIMITED
 RATE_LIMITED = ("/api/swap", "/api/quote", "/api/me", "/api/auth/")
 FEED_SECONDS = 3600
+REVENUE_SECONDS = 300
 BACKUP_SECONDS = 24 * 3600
 MAX_BODY = 10_000
 STATIC = {
@@ -265,11 +266,13 @@ SWAP_ASSETS = {
 AMOUNT = re.compile(r"^[0-9]{1,12}(\.[0-9]{1,24})?$")
 
 
-def swap_cap(symbol: str) -> Decimal:
-    # shortcut: test caps (5 NEAR, 20 USDC); raise them before the public launch.
-    return Decimal(
-        os.environ.get(f"SWAP_MAX_{symbol}", "5" if symbol == "NEAR" else "20")
-    )
+MAX_LIVE_QUOTES_PER_DAY = 20
+TX_HASH = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{43,44}$")  # NEAR tx hash, base58
+
+
+def swap_cap_usd() -> float:
+    # shortcut: a $25 cap while we test with real money; raise it before the public launch.
+    return float(os.environ.get("SWAP_MAX_USD", "25"))
 
 
 def base_units(amount: str, symbol: str) -> str:
@@ -278,14 +281,50 @@ def base_units(amount: str, symbol: str) -> str:
         raise ValueError("Use an amount like 1 or 0.5.")
     decimals = SWAP_ASSETS[symbol][1]
     value = Decimal(amount)
-    if value <= 0 or value > swap_cap(symbol):
-        raise ValueError(
-            f"Amount must be above 0 and at most {swap_cap(symbol)} {symbol}."
-        )
+    if value <= 0:
+        raise ValueError("Amount must be above 0.")
     units = value.scaleb(decimals)
     if units != units.to_integral_value():
         raise ValueError(f"{symbol} has at most {decimals} decimals.")
     return str(int(units))
+
+
+def capped_quote(request: dict, dry: bool) -> tuple[int, dict]:
+    """Quote with the fee; refuse above the USD cap before any deposit address exists."""
+    preview = sources.get_quote(request, dry=True)
+    try:
+        usd = float((preview.get("quote") or {}).get("amountInUsd") or 0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    if not 0 < usd <= swap_cap_usd():  # no price (or NaN) fails closed
+        return 400, {
+            "error": f"About ${usd:,.2f}: no price, or above the ${swap_cap_usd():.0f}"
+            " limit."
+        }
+    return 200, preview if dry else sources.get_quote(request, dry=False)
+
+
+def quote_reply(account: str, request: dict, dry: bool, kind: str) -> tuple[int, dict]:
+    """Quote (capped), keep live deposit addresses in app.quote, and shape the reply."""
+    recipient, bps = sources.fee_settings()
+    if not dry and store.live_quotes_today(db(), account) >= MAX_LIVE_QUOTES_PER_DAY:
+        return 429, {"error": "Too many deposit addresses today. Try again tomorrow."}
+    code, result = capped_quote(request, dry)
+    if code != 200:
+        return code, result
+    address = (result.get("quote") or {}).get("depositAddress")
+    if not dry and address:
+        store.log_quote(db(), account, address, request, bps, kind)
+    return 200, {
+        "quote": result.get("quote") or {},
+        "fee": {"recipient": recipient, "bps": bps},
+        "dry": dry,
+        "origin": request["originAsset"],
+    }
+
+
+def live_allowed(dry: bool) -> bool:
+    return dry or os.environ.get("SWAP_LIVE") == "1"
 
 
 def new_swap(account: str, body: dict) -> tuple[int, dict]:
@@ -301,7 +340,7 @@ def new_swap(account: str, body: dict) -> tuple[int, dict]:
     except ValueError as exc:
         return 400, {"error": str(exc)}
     dry = body.get("dry", True) is not False
-    if not dry and os.environ.get("SWAP_LIVE") != "1":
+    if not live_allowed(dry):
         return 403, {"error": "Preview only for now: no deposit addresses yet."}
     request = {
         "originAsset": SWAP_ASSETS[src][0],
@@ -310,16 +349,75 @@ def new_swap(account: str, body: dict) -> tuple[int, dict]:
         "recipient": account,
         "refundTo": account,
     }
-    recipient, bps = sources.fee_settings()
-    result = sources.get_quote(request, dry=dry)
-    address = (result.get("quote") or {}).get("depositAddress")
-    if not dry and address:
-        store.log_quote(db(), account, address, request, bps)
-    return 200, {
-        "quote": result.get("quote") or {},
-        "fee": {"recipient": recipient, "bps": bps},
-        "dry": dry,
+    return quote_reply(account, request, dry, "swap")
+
+
+def recover(account: str, address: str, dry: bool) -> tuple[int, dict]:
+    """Re-do a refunded swap at today's price, from the account the refund went to.
+
+    Only for refunds paid back on NEAR (an nep141 token) to the signed-in account, so
+    the user can send the deposit from their wallet. The original recipient is kept.
+    """
+    if not ADDRESS.match(address):
+        return 400, {"error": "Not a valid deposit address."}
+    status = sources.get_swap_status(quote(address), retries=1)
+    original = status.get("quoteResponse") or {}
+    req = original.get("quoteRequest") or {}
+    if status.get("status") != "REFUNDED":
+        return 400, {"error": "Only refunded swaps can be recovered."}
+    # Anyone can make a 1Click quote that refunds to you and pays them. So recover only
+    # swaps that paid this same account, between our two tokens, for the refunded amount.
+    if req.get("refundTo") != account or req.get("recipient") != account:
+        return 403, {
+            "error": "Only swaps to and from your own account can be recovered."
+        }
+    tokens = {t for t, _ in SWAP_ASSETS.values()}
+    origin, dest = req.get("originAsset"), req.get("destinationAsset")
+    if req.get("refundType", "ORIGIN_CHAIN") != "ORIGIN_CHAIN" or origin not in tokens:
+        return 400, {"error": "This refund went to another chain: use Swap again."}
+    refunded = str((status.get("swapDetails") or {}).get("refundedAmount") or "")
+    if dest not in tokens or dest == origin or not refunded.isdigit():
+        return 400, {"error": "This swap cannot be recovered here."}
+    if not live_allowed(dry):
+        return 403, {"error": "Preview only for now: no deposit addresses yet."}
+    request = {
+        "originAsset": origin,
+        "destinationAsset": dest,
+        "amount": refunded,
+        "recipient": account,
+        "refundTo": account,
     }
+    code, reply = quote_reply(account, request, dry, "recover")
+    if code == 200:
+        then = original.get("quote") or {}
+        reply["then"] = {
+            "amountOutFormatted": then.get("amountOutFormatted"),
+            "amountOutUsd": then.get("amountOutUsd"),
+        }
+    return code, reply
+
+
+def revenue_once() -> int:
+    """Settle our quotes: on SUCCESS record our share of the fee in USD (revenue)."""
+    cur, n = db(), 0
+    me = sources.fee_settings()[0]
+    with ops.audited(cur, PRODUCT, "revenue") as run:
+        for address in store.open_quotes(cur):
+            status = sources.get_swap_status(quote(address), retries=1)
+            if not status.get("status"):
+                continue
+            response = status.get("quoteResponse") or {}
+            fees = (response.get("quoteRequest") or {}).get("appFees") or []
+            bps = next((f.get("fee") for f in fees if f.get("recipient") == me), None)
+            usd = (status.get("swapDetails") or {}).get("amountInUsd") or (
+                response.get("quote") or {}
+            ).get("amountInUsd")
+            store.settle_quote(
+                cur, address, status["status"], float(usd) if usd else None, bps
+            )
+            n += 1
+        run["rows"] = n
+    return n
 
 
 def account_view(account: str) -> dict:
@@ -619,6 +717,29 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, RuntimeError, AttributeError) as exc:
             self.send_json(400, {"error": f"{type(exc).__name__}: {exc}"})
 
+    def swap_followup(self, path: str, body: dict) -> None:
+        """POST /api/me/recover and /api/me/swap/sent (the user sent the deposit)."""
+        account = self.account()
+        address = str(body.get("address", "")).strip()
+        tx_hash = str(body.get("txHash", ""))
+        if not account:
+            self.send_json(401, {"error": "Not signed in."})
+        elif path.endswith("recover"):
+            dry = body.get("dry", True) is not False
+            self.send_json(*recover(account, address, dry))
+        elif store.quote_owner(db(), address) != account:
+            self.send_json(404, {"error": "Not one of your swaps."})
+        elif not TX_HASH.match(tx_hash):
+            self.send_json(400, {"error": "Not a NEAR transaction hash."})
+        else:
+            store.set_quote_tx(db(), address, tx_hash)
+            try:  # optional: 1Click also finds the deposit on its own
+                sources.submit_deposit(address, tx_hash, account)
+                submitted = True
+            except (OSError, ValueError, RuntimeError):
+                submitted = False
+            self.send_json(200, {"ok": True, "submitted": submitted})
+
     def route_post(self, path: str, body: dict) -> None:
         if path == "/api/auth/verify":
             signed = body.get("signed") or {}
@@ -654,6 +775,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(401, {"error": "Not signed in."})
             else:
                 self.send_json(*new_swap(account, body))
+        elif path in ("/api/me/swap/sent", "/api/me/recover"):
+            self.swap_followup(path, body)
         elif path == "/api/me/watch":
             account = self.account()
             address = str(body.get("address", "")).strip()
@@ -691,6 +814,9 @@ def serve(
             target=_loop, args=("backup", backup_once, BACKUP_SECONDS), daemon=True
         ).start()
     host = host or os.environ.get("HOST", "127.0.0.1")
+    threading.Thread(
+        target=_loop, args=("revenue", revenue_once, REVENUE_SECONDS), daemon=True
+    ).start()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Intents Desk on http://localhost:{port}  (Ctrl+C to stop)")
     server.serve_forever()

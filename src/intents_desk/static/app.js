@@ -49,7 +49,9 @@ function renderSwap(d, address) {
   ].forEach(([k, v]) => { const dd = el("dd"); k === "Status" ? statusCell(dd, v) : (dd.textContent = v); dl.append(el("dt", k), dd); });
   out.append(dl, el("p", NEXT[d.status] || "", "next"));
   if (me && address) out.append(watchButton(address));
-  if (address && d.status === "REFUNDED" && r.depositType === "ORIGIN_CHAIN") out.append(swapAgain(address));
+  const mine = me && address && d.status === "REFUNDED" && r.refundTo === me && String(r.originAsset).startsWith("nep141:");
+  if (mine) out.append(recoverBox(address));
+  else if (address && d.status === "REFUNDED" && r.depositType === "ORIGIN_CHAIN") out.append(swapAgain(address));
 }
 
 function swapAgain(address) {
@@ -212,6 +214,73 @@ async function loadMine() {
   table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["Reason"]], d.swaps.map((s) => [new Date(s[1]).toLocaleString(), s[2], `${chain(s[3])} → ${chain(s[4])}`, usd(s[5]), s[6] || ""]), (td, v, i) => i === 1 ? statusCell(td, v) : (td.textContent = v));
 }
 
+// ---------- Send the deposit from the connected wallet (the wallet asks you to approve) ----------
+let swapLive = false;
+async function walletFor(account) {
+  const nc = await connector();
+  const w = (await nc.wallet().catch(() => null)) || (await nc.connect());
+  const on = (await w.getAccounts())?.[0]?.accountId;
+  if (on !== account) throw new Error(`Your wallet is on ${on || "no account"}. Sign in to it as ${account}.`);
+  return w;
+}
+
+// NEAR: a plain transfer. Other NEAR tokens: register the deposit account, then ft_transfer.
+function depositTx(q, origin) {
+  if (origin === "nep141:wrap.near") return { receiverId: q.depositAddress, actions: [{ type: "Transfer", params: { deposit: q.amountIn } }] };
+  const call = (methodName, args, deposit) => ({ type: "FunctionCall", params: { methodName, args, gas: "30000000000000", deposit } });
+  return { receiverId: origin.slice("nep141:".length), actions: [
+    call("storage_deposit", { account_id: q.depositAddress, registration_only: true }, "1250000000000000000000"),
+    call("ft_transfer", { receiver_id: q.depositAddress, amount: q.amountIn }, "1"),
+  ] };
+}
+
+function sendButton(q, origin, label, status) {
+  const b = el("button", `Send ${label} from your wallet`); b.type = "button";
+  b.addEventListener("click", async () => {
+    b.disabled = true; status.textContent = "Approve the transfer in your wallet…";
+    try {
+      const out = await (await walletFor(me)).signAndSendTransaction(depositTx(q, origin));
+      const hash = out?.transaction?.hash ?? out?.transaction_outcome?.id;
+      if (hash) await post("/api/me/swap/sent", { address: q.depositAddress, txHash: hash });
+      b.textContent = "Sent"; pollStatus(q.depositAddress, status);
+    } catch (err) { b.disabled = false; status.textContent = "Not sent: " + (err?.message || err); }
+  });
+  return b;
+}
+
+async function pollStatus(address, line) {
+  for (let i = 0; i < 120; i++) {  // every 10 s, for up to 20 minutes
+    const r = await fetch(`/api/swap?address=${encodeURIComponent(address)}&format=agent`);
+    const text = await r.text(); line.textContent = text;
+    if (/SUCCESS|REFUNDED|FAILED/.test(text)) { loadMine(); return; }
+    await new Promise((ok) => setTimeout(ok, 10000));
+  }
+}
+
+// ---------- Recover a refunded swap at today's price (refund came back to this account) ----------
+function recoverBox(address) {
+  const box = el("div", null, "card"); box.style.marginTop = "var(--s3)";
+  const res = el("div"); res.setAttribute("aria-live", "polite");
+  const ask = async (dry) => {
+    res.replaceChildren(el("p", dry ? "Pricing it today…" : "Getting a deposit address…", "dim"));
+    const [ok, r] = await post("/api/me/recover", { address, dry });
+    if (!ok) { res.replaceChildren(el("p", r.error || "Could not quote.", "dim")); return; }
+    const q = r.quote, dl = el("dl");
+    const then = Number(r.then?.amountOutUsd), now = Number(q.amountOutUsd);
+    const diff = then && now ? ` (${now >= then ? "+" : ""}${(100 * (now - then) / then).toFixed(1)}% vs then)` : "";
+    [["Then you were quoted", `${r.then?.amountOutFormatted ?? "?"} (${usd(r.then?.amountOutUsd)})`],
+     ["Today you get (about)", `${q.amountOutFormatted} (${usd(q.amountOutUsd)})${diff}`],
+     ["You send again", `${q.amountInFormatted} (${usd(q.amountInUsd)})`],
+     ["Fee", `${r.fee.bps / 100}%: half to ${r.fee.recipient}, half to 1Click`]].forEach(([k, v]) => dl.append(el("dt", k), el("dd", v)));
+    res.replaceChildren(dl);
+    if (dry && swapLive) { const go = el("button", "Recover at today's price"); go.type = "button"; go.addEventListener("click", () => ask(false)); res.append(go); }
+    if (!dry && q.depositAddress) { const status = el("p", null, "mono small"); res.append(sendButton(q, r.origin, q.amountInFormatted, status), status); }
+  };
+  const btn = el("button", "Price it again today"); btn.type = "button"; btn.addEventListener("click", () => ask(true));
+  box.append(el("h2", "Recover this refund"), el("p", "The refund came back to your account. Swap it again at today's price, to the same recipient. You approve the transfer in your wallet.", "dim small"), btn, res);
+  return box;
+}
+
 // ---------- New swap from your own account (fee: 0.40%, half to datablock.near) ----------
 function swapForm(d) {
   const box = el("div", null, "newswap");
@@ -240,11 +309,14 @@ function swapForm(d) {
       item("Deposit address", q.depositAddress, "mono");
       const copy = el("button", "Copy address", "ghost"); copy.type = "button";
       copy.addEventListener("click", () => navigator.clipboard?.writeText(q.depositAddress).then(() => { copy.textContent = "Copied"; }));
-      result.append(el("p", `Send exactly ${q.amountInFormatted} ${from.value} from ${d.account} to this address before the deadline. Nothing moves until you send.`), copy);
+      const status = el("p", null, "mono small"); status.setAttribute("aria-live", "polite");
+      result.append(el("p", `Send exactly ${q.amountInFormatted} ${from.value} from ${d.account} before the deadline. Nothing moves until you send.`),
+        sendButton(q, r.origin, `${q.amountInFormatted} ${from.value}`, status), " ", copy, status);
     }
   };
   const preview = el("button", "Preview quote"); preview.type = "button"; preview.addEventListener("click", () => ask(true));
   const btns = el("p"); btns.append(preview);
+  swapLive = !!d.swap_live;
   if (d.swap_live) { const live = el("button", "Get deposit address", "ghost"); live.type = "button"; live.addEventListener("click", () => ask(false)); btns.append(" ", live); }
   else btns.append(el("span", " Preview only for now: live swaps are off.", "dim small"));
   box.append(btns, result);
