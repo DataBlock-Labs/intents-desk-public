@@ -7,6 +7,7 @@ Two background threads keep the data fresh, so visitors never call a rate-limite
 
 import base64
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -76,6 +77,9 @@ def page_html() -> bytes:
         page = page.replace(
             f"/static/{name}".encode(), b"data:image/svg+xml;base64," + data
         )
+    app = pkg.joinpath("static/app.js").read_bytes()  # new code reaches phones at once
+    version = hashlib.sha256(app).hexdigest()[:10].encode()
+    page = page.replace(b'"/static/app.js"', b'"/static/app.js?v=' + version + b'"', 1)
     return page
 
 

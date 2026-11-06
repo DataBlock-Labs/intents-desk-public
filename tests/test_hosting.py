@@ -102,3 +102,13 @@ def test_large_replies_are_gzipped_only_when_asked(monkeypatch):
         assert gzip.decompress(zipped) == plain and len(zipped) < len(plain) / 2
     finally:
         server.shutdown()
+
+
+def test_page_names_app_js_by_version_so_phones_get_new_code():
+    import hashlib
+    import re
+    from importlib.resources import files
+
+    app = files("intents_desk").joinpath("static/app.js").read_bytes()
+    found = re.findall(rb'/static/app\.js\?v=([0-9a-f]{10})"', web.page_html())
+    assert found == [hashlib.sha256(app).hexdigest()[:10].encode()]

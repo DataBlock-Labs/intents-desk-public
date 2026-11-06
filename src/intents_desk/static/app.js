@@ -236,8 +236,12 @@ function watchButton(address, on = true) {
   return b;
 }
 
+let signingIn = false;
 $("connect").addEventListener("click", async () => {
-  const btn = $("connect"); btn.disabled = true; btn.textContent = "Waiting for wallet…";
+  const btn = $("connect");
+  if (signingIn) { location.reload(); return; }  // second tap cancels a wallet that never answers
+  signingIn = true; btn.textContent = "Waiting for wallet… (tap to cancel)";
+  let timer;
   try {
     const [, ch] = await getJSON("/api/auth/challenge");
     const params = { message: ch.message, recipient: ch.recipient, nonce: Uint8Array.from(atob(ch.nonce), (c) => c.charCodeAt(0)) };
@@ -247,14 +251,15 @@ $("connect").addEventListener("click", async () => {
     let signed = null;
     const keep = (e) => { signed = e.accounts?.[0]?.signedMessage ?? null; };
     nc.on("wallet:signInAndSignMessage", keep);
-    try { await nc.connect({ signMessageParams: params }); } finally { nc.off("wallet:signInAndSignMessage", keep); }
+    const noAnswer = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("No answer from the wallet in 2 minutes. Try again, or pick another wallet.")), 120000); });
+    try { await Promise.race([nc.connect({ signMessageParams: params }), noAnswer]); } finally { nc.off("wallet:signInAndSignMessage", keep); }
     if (!signed) throw new Error("The wallet did not return a signed message.");
     const [ok, d] = await post("/api/auth/verify", { signed, nonce: ch.nonce });
     if (!ok) throw new Error(d.error || "Sign-in failed.");
     await loadMine();
   } catch (err) {
     $("mine-out").replaceChildren(el("p", "Sign-in did not finish: " + (err?.message || err), "dim"));
-  } finally { btn.disabled = false; btn.textContent = "Connect wallet"; }
+  } finally { clearTimeout(timer); signingIn = false; btn.textContent = "Connect wallet"; }
 });
 
 $("signout").addEventListener("click", async () => {
