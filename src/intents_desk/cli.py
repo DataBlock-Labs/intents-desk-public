@@ -283,6 +283,35 @@ def cmd_serve(args) -> None:
     serve(args.port, db_path=args.db)
 
 
+def cmd_incidents(args) -> None:
+    """Find incidents in the hourly data, write their reports, and send drafts."""
+    from . import incidents
+
+    con = connect(args.db)
+    with ops.audited(con, PRODUCT, "incidents-cli") as run:
+        if args.evidence:  # Explorer referral fetch: about 5.5 s per 1,000 swaps
+            run.update(incidents.backfill(con, args.evidence))
+            incidents.publish(con, [args.evidence], send_drafts=False)
+            print(run)
+        run["changed"] = len(incidents.detect(con))
+        run.update(incidents.publish(con, send_drafts=False))  # every report
+        if args.draft:
+            inc = incidents.get(con, args.draft)
+            chat = incidents.owner_chat(con)
+            if inc is None or chat is None:
+                raise SystemExit("unknown incident, or the owner chat is not linked")
+            incidents.telegram.send(chat, incidents.draft(inc))
+            run["drafts"] = 1
+    for i in incidents.listing(con):
+        end = i["ended_at"] or "ongoing"
+        print(
+            f"{i['id']}  → {end}  swaps {i['swaps']:,}  refunded {i['refunded']:,}"
+            f"  failed {i['failed']:,}  bad {i['bad_pct']}%  senders {i['senders']}"
+        )
+    for a, b in incidents.gaps(con):
+        print(f"data gap: {a} to {b}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="intents-desk")
     parser.add_argument("--db", default="data/desk.duckdb")
@@ -344,6 +373,10 @@ def main() -> None:
     sub.add_parser("revenue", help="fees earned per day + Explorer check").set_defaults(
         func=cmd_revenue
     )
+    p = sub.add_parser("incidents", help="find incidents, write reports (no drafts)")
+    p.add_argument("--evidence", metavar="ID", help="fetch an incident's swaps again")
+    p.add_argument("--draft", metavar="ID", help="send this incident's X draft to me")
+    p.set_defaults(func=cmd_incidents)
     p = sub.add_parser("serve", help="run the local dashboard")
     p.add_argument("--port", type=int, default=8420)
     p.set_defaults(func=cmd_serve)

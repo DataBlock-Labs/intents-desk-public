@@ -65,17 +65,27 @@ def free_port() -> int:
     return port
 
 
-def run_app(tmp_path_factory, **extra):
-    """Start the app as a process against the fake APIs; yield its URL."""
+def run_app(tmp_path_factory, seed=None, **extra):
+    """Start the app as a process against the fake APIs; yield its URL.
+
+    `seed(con)` fills the database before the server opens it."""
     fake = fakes.Fake()
     base = fake.start()
     tmp = tmp_path_factory.mktemp("e2e")
+    if seed:
+        from intents_desk.store import connect
+
+        con = connect(tmp / "e2e.duckdb")
+        seed(con)
+        con.close()
     port = free_port()
     env = {
         **os.environ,
         **fakes.env(base),
         "SESSION_KEY_FILE": str(tmp / "s.key"),
         "PUBLIC_HOST": f"127.0.0.1:{port}",
+        "INCIDENT_REPORTS_DIR": str(tmp / "reports"),
+        "VAULT_INCIDENTS_DIR": "",
         **extra,
     }
     proc = subprocess.Popen(
@@ -333,3 +343,72 @@ def test_recover_a_refund_at_todays_price(live_app, page):
     sent = page.evaluate("window.__sent")
     assert sent[-1]["actions"][0]["params"]["deposit"] == str(2 * 10**24)
     assert page.errors == []
+
+
+def seed_incidents(con):
+    """A closed incident 3 days ago and an ongoing one in the last hour."""
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    rows = []
+    for h in range(-80, 0):
+        rows.append((now + timedelta(hours=h), "partner-b", "SUCCESS", 1000, None))
+    for h in (-72, -71):
+        rows.append(
+            (
+                now + timedelta(hours=h),
+                "old-widget:pda",
+                "REFUNDED",
+                90,
+                "QUOTE_EXPIRED",
+            )
+        )
+        rows.append((now + timedelta(hours=h), "old-widget:pda", "FAILED", 10, None))
+    rows.append(
+        (
+            now - timedelta(hours=1),
+            "live-widget:pda",
+            "REFUNDED",
+            80,
+            "INTENT_SUBMIT_FAILED",
+        )
+    )
+    con.executemany(
+        "INSERT INTO ops.hourly_swap_summary (hour, partner, origin_chain, destination_chain,"
+        " status, swaps, usd_in, refunded_usd, top_refund_reason)"
+        " VALUES (?, ?, 'arb', 'base', ?, ?, 0, NULL, ?)",
+        rows,
+    )
+    from intents_desk import incidents
+
+    incidents.detect(con)
+
+
+@pytest.fixture(scope="module")
+def incident_app(tmp_path_factory):
+    yield from run_app(tmp_path_factory, seed=seed_incidents)
+
+
+def test_past_incidents_list_and_detail(incident_app):
+    url, _ = incident_app
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        open_page(page, url)
+        live = page.locator("#incidents tr", has_text="live-widget:pda")
+        expect(live).to_contain_text("ONGOING")
+        old = page.locator("#incidents tr", has_text="old-widget:pda")
+        expect(old).not_to_contain_text("ONGOING")
+        expect(page.locator("#incidents")).to_contain_text("old-widget:pda")
+        expect(page.locator("#incidents")).to_contain_text("QUOTE_EXPIRED")
+        page.locator("#incidents a", has_text="old-widget:pda").click()
+        expect(page.locator("#incident-view")).to_be_visible()
+        expect(page.locator("#incident-stats")).to_contain_text("200 swaps")
+        expect(page.locator("#incident-stats")).to_contain_text("20 failed")
+        expect(page.locator("#incident-routes")).to_contain_text("arb → base")
+        page.click("#incident-close")
+        expect(page.locator("#incident-view")).to_be_hidden()
+        assert errors == []
+        browser.close()

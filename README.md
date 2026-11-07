@@ -192,6 +192,28 @@ keeping them.
   watched swaps, `/stop` unlinks. To enable on a server, create a bot with @BotFather and set
   `TELEGRAM_BOT_TOKEN` (`make serve` reads `~/.config/intents-desk/telegram.env`).
 
+## Incident log
+
+- **Rule:** an incident opens when a partner has at least 50 swaps in an hour and at least
+  50% of them are REFUNDED or FAILED. For the whole network, the rule is more than 10% of all
+  swaps. Bad hours with at most 2 clean hours between them are one incident. It closes after
+  2 clean hours.
+- **Data:** detection reads the hourly rollup (`ops.hourly_swap_summary`, kept forever) and
+  the newest raw hours. It runs after every sync, and every 2 minutes while an incident is
+  open. `ops.incident` keeps totals, routes and per-hour rates, plus a sample of public NEAR
+  transaction hashes as evidence. It never keeps sender, recipient or full deposit addresses.
+- **Page:** **Past incidents** lists every incident. Click one for the hourly rates, routes
+  and evidence (`/#incident=<id>`). Hours with no swaps at all show as data gaps.
+- **Posts:** each incident gets a report in `reports/incidents/` (git-ignored), and a vault
+  note when `VAULT_INCIDENTS_DIR` is set. The owner (`OWNER_ACCOUNT`, linked in Telegram) gets
+  one X draft when an incident opens and one when it closes. Nothing is posted automatically.
+- **After the 24 h purge:** `intents-desk incidents --evidence <id>` fetches the incident's
+  swaps again from the Explorer API (referral filter, about 4 minutes for 44,000 swaps).
+  It adds the senders count and the evidence sample.
+- **Stale data:** if no sync has worked for 30 minutes, the owner gets one Telegram message.
+- **Always on:** `make service` installs a systemd user service (`Restart=always`) that runs
+  `scripts/serve-live` with the env files in `~/.config/intents-desk/`.
+
 ## Swaps, recovery and fees
 
 - **New swap** (after wallet sign-in): NEAR ↔ USDC on NEAR, paid to your own account, with

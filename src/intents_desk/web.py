@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import auth, ops, sources, store, telegram
+from . import auth, incidents, ops, sources, store, telegram
 
 PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -33,6 +33,8 @@ REF = re.compile(r"^[0-9a-f]{20}$")
 ACCOUNT = re.compile(r"^[a-z0-9._-]{2,64}$")
 CACHE_SECONDS = 60
 SYNC_SECONDS = 600
+INCIDENT_SYNC_SECONDS = 120  # while an incident is open
+STALE_MINUTES = 30  # no good sync for this long: tell the owner
 SYNC_HOURS = 2  # re-read this much before the newest stored swap (statuses change)
 MAX_SYNC_HOURS = 24  # first run, or after a long downtime
 RATE_PER_MIN = 30  # per client IP, for the routes in RATE_LIMITED
@@ -504,6 +506,64 @@ def sync_once() -> int:
     return n
 
 
+_incident_cache: dict = {"at": 0.0, "data": None}
+
+
+def incident_list() -> dict:
+    """The incidents table and data gaps, cached for CACHE_SECONDS (gaps scan the rollup)."""
+    if (
+        _incident_cache["data"] is None
+        or time.time() - _incident_cache["at"] > CACHE_SECONDS
+    ):
+        rows = [incidents.public(i) for i in incidents.listing(db())]
+        for i in rows:
+            i.pop("evidence")
+        _incident_cache.update(
+            at=time.time(), data={"incidents": rows, "gaps": incidents.gaps(db())}
+        )
+    return _incident_cache["data"]
+
+
+def incidents_once() -> int:
+    cur = db()
+    with ops.audited(cur, PRODUCT, "incidents") as run:
+        run.update(incidents.run(cur, send_drafts=telegram.enabled()))
+    _incident_cache["data"] = None
+    return run["rows"]
+
+
+def sync_and_incidents() -> int:
+    n = sync_once()
+    incidents_once()
+    return n
+
+
+def sync_seconds() -> int:
+    return INCIDENT_SYNC_SECONDS if incidents.open_count(db()) else SYNC_SECONDS
+
+
+def stale_once() -> int:
+    """Tell the owner once when the sync has not worked for STALE_MINUTES."""
+    (age,) = (
+        db()
+        .execute(
+            "SELECT epoch(now()) - epoch(max(finished_at)) FROM ops.run_log"
+            " WHERE job = 'sync' AND status = 'ok'"
+        )
+        .fetchone()
+    )
+    stale = age is None or age > STALE_MINUTES * 60
+    if stale and not _status.get("stale_sent"):
+        chat = incidents.owner_chat(db())
+        if chat is not None:
+            minutes = "never" if age is None else f"{int(age // 60)} min ago"
+            telegram.send(chat, f"Intents Desk: no good swap sync (last: {minutes}).")
+            _status["stale_sent"] = True
+    elif not stale:
+        _status["stale_sent"] = False
+    return int(stale)
+
+
 def feed_once() -> int:
     cur = db()
     with ops.audited(cur, PRODUCT, "feed") as run:
@@ -566,7 +626,7 @@ def _loop(name: str, fn, seconds: int) -> None:
             subprocess.SubprocessError,
         ) as exc:
             print(f"[{name}] failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        time.sleep(seconds)
+        time.sleep(seconds() if callable(seconds) else seconds)
 
 
 _buckets: dict[str, tuple[float, float]] = {}  # client ip -> (tokens, last time)
@@ -698,6 +758,14 @@ class Handler(BaseHTTPRequestHandler):
                 for r in rows:
                     r["partner"] = mask_partner(r["partner"])
                 self.send_json(200, rows)
+        elif path == "/api/incidents":
+            self.send_json(200, incident_list())
+        elif path == "/api/incident":
+            inc = incidents.find_public(db(), q.get("id", [""])[0][:200])
+            if inc is None:
+                self.send_json(404, {"error": "Incident not found."})
+            else:
+                self.send_json(200, inc)
         elif path == "/api/hourly":
             self.send_json(200, store.hourly_refunds(db(), 24))
         elif path == "/api/feed":
@@ -853,8 +921,12 @@ def serve(
     db()  # open the database before the threads start
     if os.environ.get("INTENTS_EXPLORER_JWT"):
         threading.Thread(
-            target=_loop, args=("sync", sync_once, SYNC_SECONDS), daemon=True
+            target=_loop, args=("sync", sync_and_incidents, sync_seconds), daemon=True
         ).start()
+        if telegram.enabled():
+            threading.Thread(
+                target=_loop, args=("stale", stale_once, 300), daemon=True
+            ).start()
     threading.Thread(
         target=_loop, args=("feed", feed_once, FEED_SECONDS), daemon=True
     ).start()

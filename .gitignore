@@ -7,4 +7,5 @@ __pycache__/
 bench/
 .vscode/
 reports/partner-*
+reports/incidents/
 docs/images/*.tmp.png
