@@ -266,3 +266,8 @@ def test_masked_detail_has_no_evidence(con, monkeypatch, tmp_path):
     monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "s.key"))
     monkeypatch.setenv("MASK_PARTNERS", "1")
     assert incidents.public(inc)["evidence"] == []
+    inc["evidence"][0]["block"] = 1  # blocks lead to the partner's txs too
+    assert (
+        incidents.public(inc)["blocks"] is None
+        and not incidents.public(inc)["reproduce"]
+    )

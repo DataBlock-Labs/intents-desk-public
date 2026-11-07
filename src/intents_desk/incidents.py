@@ -422,7 +422,7 @@ def public(inc: dict) -> dict:
         # on-chain txs can name the partner: no evidence while names are masked
         "evidence": [] if os.environ.get("MASK_PARTNERS") == "1" else inc["evidence"],
         "reproduce": "" if os.environ.get("MASK_PARTNERS") == "1" else reproduce(inc),
-        "blocks": block_range(inc),
+        "blocks": None if os.environ.get("MASK_PARTNERS") == "1" else block_range(inc),
         "who": who_should_look(inc),
     }
 
