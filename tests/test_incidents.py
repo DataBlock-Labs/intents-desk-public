@@ -242,12 +242,15 @@ def test_report_files_do_not_collide_and_links_are_escaped(con, tmp_path, monkey
     bad(con, 0, "a:pda")
     bad(con, 0, "a-pda")
     bad(con, 0, "[click](https://evil.example)")
+    bad(con, 0, "https://evil.example www.evil.example")
     incidents.detect(con)
     incidents.publish(con, send_drafts=False)
     files = list((tmp_path / "reports" / "incidents").glob("*.md"))
-    assert len(files) == 4  # 3 partners + the network (180 of 1,180 bad)
+    assert len(files) == 5  # 4 partners + the network
     text = "".join(f.read_text() for f in files)
     assert "[click](https" not in text and "\\[click\\]" in text
+    links = text.replace("https://nearblocks.io", "")
+    assert "https://" not in links and "www.evil" not in links
 
 
 def test_masked_detail_has_no_evidence(con, monkeypatch, tmp_path):

@@ -22,9 +22,8 @@ from .ops import CHAIN_MACRO
 
 MIN_SWAPS, BAD_PCT, NETWORK_PCT, CLEAN_HOURS = 50, 50.0, 10.0, 2
 NETWORK = "(all)"
-MD = re.compile(
-    r"([\\`*_\[\]()!#~])"
-)  # Markdown control characters (md_table escapes <>|)
+# Markdown control characters, plus : and . so URLs don't autolink (md_table does <>|)
+MD = re.compile(r"([\\`*_\[\]()!#~:.])")
 NEAR_TX = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{43,44}$")  # base58 hash: safe in a link
 HOUR = timedelta(hours=1)
 
