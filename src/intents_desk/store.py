@@ -153,6 +153,9 @@ def connect(path: str | Path = "data/desk.duckdb") -> duckdb.DuckDBPyConnection:
     from .incidents import ensure as ensure_incidents
 
     ensure_incidents(con)
+    from .support import ensure as ensure_support
+
+    ensure_support(con)
     con.execute(  # fees earned per day; other DataBlock products read the same view
         "CREATE VIEW IF NOT EXISTS ops.daily_revenue AS"
         " SELECT CAST(settled_at AS DATE) AS day, count(*) AS swaps,"
@@ -682,6 +685,13 @@ def recent_swaps(
         "reason",
     )
     return [dict(zip(keys, r, strict=True)) for r in rows]
+
+
+def ref_of(address: str) -> str:
+    """The public ref of a deposit address (same keyed hash as in recent_swaps)."""
+    import hashlib
+
+    return hashlib.md5((_ref_secret() + address).encode()).hexdigest()[:20]
 
 
 def address_for_ref(con, ref: str) -> str | None:

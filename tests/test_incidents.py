@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -15,6 +16,7 @@ HOUR = timedelta(hours=1)
 def con(tmp_path, monkeypatch):
     monkeypatch.setenv("INCIDENT_REPORTS_DIR", str(tmp_path / "reports" / "incidents"))
     monkeypatch.delenv("VAULT_INCIDENTS_DIR", raising=False)
+    monkeypatch.setenv("NEAR_BLOCK_LOOKUP", "0")  # no real RPC calls from unit tests
     return connect(tmp_path / "t.duckdb")
 
 
@@ -249,8 +251,10 @@ def test_report_files_do_not_collide_and_links_are_escaped(con, tmp_path, monkey
     assert len(files) == 5  # 4 partners + the network
     text = "".join(f.read_text() for f in files)
     assert "[click](https" not in text and "\\[click\\]" in text
-    links = text.replace("https://nearblocks.io", "")
+    prose = re.sub(r"```.*?```", "", text, flags=re.DOTALL)  # code: no autolinks
+    links = prose.replace("https://nearblocks.io", "")
     assert "https://" not in links and "www.evil" not in links
+    assert "referral=https%3A%2F%2Fevil.example%20www" in text  # URL-encoded in curl
 
 
 def test_masked_detail_has_no_evidence(con, monkeypatch, tmp_path):

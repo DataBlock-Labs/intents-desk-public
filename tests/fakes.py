@@ -19,6 +19,10 @@ REFUNDED = "TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq"
 NEAR_REFUNDED = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 USDT_TRON = "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near"
 USDT_ETH = "nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near"
+# public chain references of the STATUS swap (lookup by hash, case file)
+TRON_TX = "9c1e5f00aa11bb22cc33dd44ee55ff6600778899aabbccddeeff001122334455"
+NEAR_TX = "7nLmhrycnYcFrTFWm4aABUziPdCwRu9p3kBNR6Q9vf2n"
+NEAR_BLOCK = 131_224_001
 
 
 def _iso(dt: datetime) -> str:
@@ -60,8 +64,19 @@ STATUS = {
         "refundedAmountFormatted": "15006.128946",
         "refundedAmountUsd": "14991.1",
         "refundReason": "QUOTE_EXPIRED",
+        "nearTxHashes": [NEAR_TX],
+        "originChainTxHashes": [
+            {
+                "hash": TRON_TX,
+                "explorerUrl": f"https://tronscan.org/#/transaction/{TRON_TX}",
+            }
+        ],
+        "destinationChainTxHashes": [
+            {"hash": "bad hash <x>", "explorerUrl": "javascript:alert(1)"}
+        ],
     },
     "quoteResponse": {
+        "timestamp": "2026-11-04T13:05:12.000Z",
         "quoteRequest": {
             "originAsset": USDT_TRON,
             "destinationAsset": USDT_ETH,
@@ -163,6 +178,12 @@ class Fake:
                     block = json.loads(json.dumps(fake.block))
                     block["block"]["header"]["height"] = int(p.rsplit("/", 1)[1])
                     self.reply(200, block)
+                elif p == "/explorer/transactions" and "search" in q:
+                    key = q["search"][0]
+                    hit = key in (TRON_TX, NEAR_TX)
+                    row = {"depositAddress": REFUNDED, "nearTxHashes": [NEAR_TX],
+                           "originChainTxHashes": [TRON_TX]}  # fmt: skip
+                    self.reply(200, [row] if hit else [])
                 elif p == "/explorer/transactions":
                     n = int(q.get("numberOfTransactions", ["50"])[0])
                     self.reply(200, explorer_swaps(datetime.now(UTC))[:n])
@@ -213,6 +234,19 @@ class Fake:
                 elif p == "/oneclick/deposit/submit":
                     SUBMITTED.append(body)
                     self.reply(200, {"status": "PENDING_DEPOSIT"})
+                elif p == "/rpc" and body.get("method") == "tx":
+                    found = body["params"]["tx_hash"] == NEAR_TX
+                    outcome = {"transaction_outcome": {"block_hash": "BlockHash1"}}
+                    self.reply(200, {"jsonrpc": "2.0", "id": 1, "result": outcome} if found
+                               else {"jsonrpc": "2.0", "id": 1, "error": {"name": "UNKNOWN_TRANSACTION"}})  # fmt: skip
+                elif p == "/rpc" and body.get("method") == "block":
+                    header = {
+                        "height": NEAR_BLOCK,
+                        "timestamp_nanosec": "1794000000000000000",
+                    }
+                    self.reply(
+                        200, {"jsonrpc": "2.0", "id": 1, "result": {"header": header}}
+                    )
                 elif p == "/rpc":
                     kind = body["params"]["request_type"]
                     if kind == "view_access_key":
@@ -252,5 +286,6 @@ def env(base: str) -> dict[str, str]:
         "X_SEARCH_URL": f"{base}/x/search",
         "REDDIT_URL": f"{base}/reddit",
         "INTENTS_EXPLORER_JWT": "fake-explorer-key",
+        "EXPLORER_GAP_S": "0",  # the fake has no rate limit
         "X_BEARER_TOKEN": "fake-x-key",
     }

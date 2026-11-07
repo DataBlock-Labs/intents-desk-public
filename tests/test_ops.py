@@ -117,6 +117,10 @@ def test_backup_has_no_api_data_and_detects_tampering(tmp_path):
     assert set(manifest["tables"]) == {
         "ops.run_log",
         "ops.hourly_swap_summary",
+        "ops.incident",
+        "ops.support_lookup",
+        "app.support_case",
+        "app.tx_block",
         "bronze.receipt",
         "silver.event",
         "silver.token_diff",

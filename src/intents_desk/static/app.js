@@ -17,41 +17,101 @@ function table(t, head, rows, fill) {
   rows.forEach((r) => { const row = t.insertRow(); r.forEach((v, i) => { const td = row.insertCell(); if (head[i][1]) td.className = "n"; fill ? fill(td, v, i, r) : (td.textContent = v); }); });
 }
 
-const NEXT = {
-  SUCCESS: "The swap is complete.",
-  PROCESSING: "The swap is in progress. Check again in 10 minutes.",
-  PENDING_DEPOSIT: "1Click is waiting for your deposit. Send it before the quote deadline.",
-  INCOMPLETE_DEPOSIT: "Your deposit was less than the quote. The rest is refunded to your refund address.",
-  REFUNDED: "Your funds went back to your refund address. You can get a new quote below.",
-  FAILED: "The swap failed. Contact NEAR Intents support with this deposit address.",
-};
+// Copy text, say so on the button and to screen readers, then reset after 2 s.
+function copyButton(label, text) {
+  const b = el("button", label, "ghost"); b.type = "button";
+  b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text()); b.textContent = "Copied"; $("case-status").textContent = label.replace(/^Copy /, "") + " copied"; }
+    catch { b.textContent = "Copy failed: use Download"; }
+    setTimeout(() => { b.textContent = label; }, 2000);
+  });
+  return b;
+}
+function download(name, text, type) {
+  const a = el("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name;
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const shortHash = (h) => h.length > 20 ? `${h.slice(0, 10)}…${h.slice(-6)}` : h;
+const FINAL = ["SUCCESS", "REFUNDED", "FAILED"];
 
 // ---------- Swap lookup ----------
 $("lookup").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const address = $("addr").value.trim(), out = $("swap");
-  out.textContent = "Checking…";
-  const [ok, d] = await getJSON("/api/swap?address=" + encodeURIComponent(address));
-  if (!ok || !d.status) { out.replaceChildren(el("p", d.error || d.message || "1Click does not know this address.", "dim")); return; }
-  renderSwap(d, address);
+  checkAddress($("addr").value.trim());
 });
+// One case on screen: every new check gets a number, and an older reply is dropped.
+let caseTimer, caseSeq = 0;
+async function checkAddress(address) {
+  const out = $("swap"), btn = $("lookup").querySelector("button"), my = ++caseSeq;
+  clearTimeout(caseTimer); btn.disabled = true; btn.textContent = "Checking…";
+  const [ok, d] = await getJSON("/api/swap?address=" + encodeURIComponent(address)).finally(() => { btn.disabled = false; btn.textContent = "Check"; });
+  if (my !== caseSeq) return;
+  if (!ok || !d.case) { out.replaceChildren(el("p", d.error || d.message || "1Click does not know this address.", "dim")); $("addr").focus(); return; }
+  // a swap found by tx hash comes back without addresses: no watch, recover or quote
+  renderSwap(d, d.by_hash ? null : address, d.by_hash ? null : address);
+  if (FINAL.includes(d.case.status)) return;
+  // a hash search costs the shared Explorer slot: check again by the case ref instead
+  caseTimer = setTimeout(() => d.by_hash ? lookupRef(d.case.ref, "", false) : checkAddress(address), 20000);
+}
 
-// Show one swap. `address` is null for swaps opened from the public list (no watch/quote).
-function renderSwap(d, address) {
-  const out = $("swap"); out.replaceChildren();
-  const q = d.quoteResponse?.quote ?? {}, r = d.quoteResponse?.quoteRequest ?? {}, s = d.swapDetails ?? {};
-  const dl = el("dl");
-  [["Status", d.status], ["Route", `${chain(r.originAsset)} → ${chain(r.destinationAsset)}`],
-   ["Sent", q.amountInFormatted ? `${q.amountInFormatted} (${usd(q.amountInUsd)})` : "–"],
-   ["Received", s.amountOutFormatted && s.amountOutFormatted !== "0" ? `${s.amountOutFormatted} (${usd(s.amountOutUsd)})` : "–"],
-   ["Refunded", s.refundedAmountFormatted && s.refundedAmountFormatted !== "0" ? `${s.refundedAmountFormatted} (${usd(s.refundedAmountUsd)})` : "–"],
-   ["Reason", s.refundReason || "–"], ["Last update", d.updatedAt ? new Date(d.updatedAt).toLocaleString() : "–"],
-  ].forEach(([k, v]) => { const dd = el("dd"); k === "Status" ? statusCell(dd, v) : (dd.textContent = v); dl.append(el("dt", k), dd); });
-  out.append(dl, el("p", NEXT[d.status] || "", "next"));
+// Show one swap as a support case. `address` is null when the page never had the
+// swap's address (public list, case link, lookup by hash): no watch, recover or quote.
+function renderSwap(d, address, typed = address) {
+  const out = $("swap"), r = d.quoteResponse?.quoteRequest ?? {};
+  out.replaceChildren(renderCase(d.case, d.saved, typed));
+  if (!/^#(incident|partner)=/.test(location.hash)) history.replaceState(null, "", "#case=" + d.case.ref);
   if (me && address) out.append(watchButton(address));
   const mine = me && address && d.status === "REFUNDED" && r.refundTo === me && String(r.originAsset).startsWith("nep141:");
   if (mine) out.append(recoverBox(address));
   else if (address && d.status === "REFUNDED" && r.depositType === "ORIGIN_CHAIN") out.append(swapAgain(address));
+}
+
+function renderCase(c, saved, typed) {
+  const box = el("div");
+  const head = el("p", null, "answer"), st = el("span"); statusCell(st, c.status);
+  head.append(st, ` · ${c.route} · ${c.amount_in || "–"}${c.usd_in ? ` (${usd(c.usd_in)})` : ""}`);
+  const dl = el("dl");
+  const rows = [["Answer", c.answer], ["Why", c.cause || "–"], ["Next step", c.next], ["Reason code", c.reason || "–"],
+    ["Incident", c.incident], ["Updated", c.updated_at ? utc(c.updated_at) : "–"]];
+  rows.forEach(([k, v]) => {
+    if (k === "Incident" && !v) return;
+    const dd = el("dd");
+    if (k === "Incident") {
+      if (v.ongoing) dd.append(el("span", "ONGOING", "alert"), " ");
+      const a = el("a", `${v.label}: ${fmt(v.refunded)} refunded, ${fmt(v.failed)} failed`); a.href = "#incident=" + encodeURIComponent(v.id); dd.append(a, el("span", " Not a mistake on your side.", "dim"));
+    } else dd.textContent = v;
+    dl.append(el("dt", k), dd);
+  });
+  box.append(head, dl);
+  if (saved) box.append(el("p", "Saved copy: 1Click keeps live details for 24 hours.", "dim small"));
+  box.append(el("h2", "Timeline (UTC)", "plain mt"));
+  const ol = el("ol", null, "timeline");
+  for (const t of c.timeline) {
+    const li = el("li", t.step + (t.at ? ` · ${utc(t.at)}` : "")); if (!t.done) li.className = "no";
+    if (!t.done) li.append(el("span", FINAL.includes(c.status) ? " · did not happen" : " · not yet", "dim"));
+    if (t.ref) li.append(el("span", " · " + shortHash(t.ref), "dim small"));
+    ol.append(li);
+  }
+  box.append(ol, el("h2", "Transactions", "plain mt"));
+  const refs = el("table");
+  const wrap = el("div", null, "scroll"); wrap.append(refs); box.append(wrap);
+  table(refs, [["Chain"], ["Kind"], ["Transaction"], ["Block", 1], ["Explorer"]],
+    c.refs.map((x) => [x.chain, x.kind, x.hash, x.block ? fmt(x.block) : "–", x.url]),
+    (td, v, i) => {
+      if (i === 2) { const code = el("span", shortHash(v)); code.title = v; td.append(code, " ", copyButton("Copy hash", () => v)); }
+      else if (i === 4) { if (!v) { td.textContent = "–"; return; } const a = el("a", new URL(v).hostname + " ↗", "small"); a.href = v; a.target = "_blank"; a.rel = "noopener noreferrer"; a.setAttribute("aria-label", `${new URL(v).hostname}, opens a new tab`); td.append(a); }
+      else td.textContent = v;
+    });
+  if (!c.refs.length) refs.append(el("caption", c.status === "FAILED" ? "No transactions: no funds moved." : "No transactions yet.", "dim small"));
+  const msg = () => c.message + (typed ? `\nKey you checked: ${typed}` : "");
+  const actions = el("div", null, "actions");
+  actions.append(copyButton("Copy link", () => `${location.origin}${location.pathname}#case=${c.ref}`),
+    copyButton("Copy support message", msg));
+  const dl2 = el("button", "Download .md", "ghost"); dl2.type = "button";
+  dl2.addEventListener("click", () => download(`swap-case-${c.ref}.md`, msg(), "text/markdown"));
+  actions.append(dl2); box.append(actions);
+  $("case-status").textContent = `${c.status}: ${c.answer}`;
+  return box;
 }
 
 function swapAgain(address) {
@@ -162,10 +222,18 @@ async function showIncident() {
   const others = i.others_pct == null ? "" : ` · partners without an incident: ${i.others_pct}%`;
   const top = i.partners?.length ? ` · top partners: ${i.partners.map(([p, n]) => `${p} (${fmt(n)})`).join(", ")}` : "";
   $("incident-stats").textContent = `${utc(i.started_at)} → ${utc(i.ended_at)} · ${fmt(i.swaps)} swaps · ${fmt(i.refunded)} refunded · ${fmt(i.failed)} failed · ${i.bad_pct}% bad${others}${i.senders != null ? ` · ${fmt(i.senders)} senders` : ""}${top}`;
+  $("incident-blocks").textContent = i.blocks ? `NEAR blocks ${fmt(i.blocks[0])} → ${fmt(i.blocks[1])} (first and last sample tx)` : "";
+  const most = Math.max(1, ...i.hours.map(([, n]) => n));
+  $("incident-swaps-bars").replaceChildren(...i.hours.map(([h, n]) => { const b = el("span"); b.style.height = Math.max(100 * n / most, 2) + "%"; b.title = `${utc(h)}: ${fmt(n)} swaps`; return b; }));
+  table($("incident-who"), [["Team"], ["What to check"]], i.who || []);
+  $("incident-repro").classList.toggle("hidden", !i.reproduce); $("repro-copy").classList.toggle("hidden", !i.reproduce);
+  $("incident-repro-text").textContent = i.reproduce || "";
+  shownIncident = i;
   $("incident-bars").replaceChildren(...i.hours.map(([h, n, p]) => { const b = el("span"); b.style.height = Math.max(p, 2) + "%"; b.title = `${utc(h)}: ${p}% of ${fmt(n)} swaps refunded or failed`; return b; }));
   table($("incident-routes"), [["From → to"], ["Swaps", 1], ["Bad", 1]], i.routes.map(([r, n, p]) => [r, fmt(n), p + "%"]));
-  table($("incident-evidence"), [["Created (UTC)"], ["Status"], ["Reason"], ["Route"], ["Amount", 1], ["NEAR tx"]],
-    i.evidence.map((e) => [e.created_at.slice(5, 19).replace("T", " "), e.status, e.reason || "–", e.route, e.amount_in, e.near_tx]),
+  table($("incident-evidence"), [["Created (UTC)"], ["Status"], ["Reason"], ["Route"], ["Amount", 1], ["NEAR tx"], ["Block", 1], ["Origin tx"], ["Intent"]],
+    i.evidence.map((e) => [e.created_at.slice(5, 19).replace("T", " "), e.status, e.reason || "–", e.route, e.amount_in, e.near_tx,
+      e.block ? fmt(e.block) : "–", (e.origin_tx || []).map(shortHash).join(" ") || "–", (e.intent || []).map(shortHash).join(" ") || "–"]),
     (td, v, c) => {
       if (c === 1) statusCell(td, v);
       else if (c === 5) { if (!v.length) td.textContent = "none (no funds moved)";
@@ -176,6 +244,14 @@ async function showIncident() {
   box.scrollIntoView({ block: "start" });
 }
 window.addEventListener("hashchange", showIncident);
+let shownIncident = null;
+// CSV for spreadsheets: cells that start with = + - @ tab or CR get a ' (never a formula)
+const csvCell = (v) => { let t = Array.isArray(v) ? v.join(" ") : v == null ? "" : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return `"${t.replaceAll('"', '""')}"`; };
+const CSV_COLS = ["created_at", "status", "reason", "route", "amount_in", "usd_in", "deposit", "near_tx", "block", "origin_tx", "dest_tx", "intent"];
+$("ev-csv").addEventListener("click", () => { if (!shownIncident) return;
+  download("incident-evidence.csv", [CSV_COLS.join(","), ...shownIncident.evidence.map((e) => CSV_COLS.map((k) => csvCell(e[k])).join(","))].join("\n"), "text/csv"); });
+$("ev-json").addEventListener("click", () => { if (shownIncident) download("incident.json", JSON.stringify(shownIncident, null, 2), "application/json"); });
+$("repro-copy").replaceWith(Object.assign(copyButton("Copy commands", () => shownIncident?.reproduce || ""), { id: "repro-copy", className: "ghost hidden" }));
 $("incident-close").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showIncident(); });
 
 // ---------- Recent swaps ----------
@@ -200,12 +276,26 @@ for (const id of ["f-status", "f-partner", "f-route"]) $(id).addEventListener("c
 $("swaps-more").addEventListener("click", () => { swapLimit = 100; $("swaps-more").classList.add("hidden"); loadSwaps(); });
 
 // A swap from the public list: the page never gets its full address, only a ref.
-async function lookupRef(ref, short) {
-  $("addr").value = ""; $("lookup-h").scrollIntoView();
-  const out = $("swap"); out.replaceChildren(el("p", `Checking ${short}…`, "dim"));
+async function lookupRef(ref, short, first = true) {
+  const out = $("swap"), my = ++caseSeq;
+  if (first) { $("addr").value = ""; $("lookup-h").scrollIntoView(); out.replaceChildren(el("p", `Checking ${short}…`, "dim")); }
+  clearTimeout(caseTimer);
   const [ok, d] = await getJSON("/api/swap?ref=" + encodeURIComponent(ref));
-  if (!ok || !d.status) { out.replaceChildren(el("p", d.error || d.message || `1Click does not know swap ${short}.`, "dim")); return; }
+  if (my !== caseSeq) return;
+  if (!ok || !d.case) { if (first) out.replaceChildren(el("p", d.error || d.message || `1Click does not know swap ${short}.`, "dim")); return; }
   renderSwap(d, null);
+  if (!FINAL.includes(d.case.status) && !d.saved) caseTimer = setTimeout(() => lookupRef(ref, short, false), 20000);
+}
+// A case link: #case=<ref>
+function showCase() { const m = location.hash.match(/^#case=([0-9a-f]{20})$/); if (m) lookupRef(m[1], m[1].slice(0, 6) + "…"); }
+window.addEventListener("hashchange", showCase);
+
+async function loadAsks() {
+  const [ok, d] = await getJSON("/api/asks");
+  const list = ok ? d.asks : [];
+  table($("asks"), [["Status"], ["Reason"], ["Lookups", 1], ["In an incident", 1]], list.map((a) => [a.status, a.reason || "–", fmt(a.lookups), fmt(a.in_incident || 0)]),
+    (td, v, i) => i === 0 ? statusCell(td, v) : (td.textContent = v));
+  if (!list.length) $("asks").append(el("caption", "No lookups in the last 24 hours.", "dim small"));
 }
 
 // ---------- Feed ----------
@@ -445,11 +535,14 @@ loadFeed();
 loadMine();
 loadSwaps();
 loadIncidents();
+loadAsks();
 const whenVisible = (fn) => () => { if (!document.hidden) fn(); };  // no polling in a background tab
 setInterval(whenVisible(loadHealth), 60000);
 setInterval(whenVisible(loadSwaps), 60000);
 setInterval(whenVisible(loadIncidents), 300000);
+setInterval(whenVisible(loadAsks), 300000);
 document.addEventListener("visibilitychange", whenVisible(() => { loadHealth(); loadSwaps(); }));
 (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => connector().catch(() => {}));
 showPartner();
 showIncident();
+showCase();

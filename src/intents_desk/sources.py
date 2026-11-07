@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -33,8 +34,11 @@ _opener = urllib.request.build_opener(_NoRedirect)
 _public = urllib.request.build_opener()
 
 
-def get_json(url: str, body: dict | None = None, retries: int = 6) -> dict:
-    """Get JSON from a URL. Retry with backoff on rate limits and server errors."""
+def get_json(
+    url: str, body: dict | None = None, retries: int = 6, gated: bool = True
+) -> dict:
+    """Get JSON from a URL. Retry with backoff on rate limits and server errors.
+    Explorer requests wait for the shared slot (1 request every EXPLORER_GAP s)."""
     data = json.dumps(body).encode() if body is not None else None
     headers = dict(HEADERS)
     # 1Click works without a key. Send the partner key (ONECLICK_JWT) when it is set.
@@ -43,6 +47,8 @@ def get_json(url: str, body: dict | None = None, retries: int = 6) -> dict:
     if url.startswith(EXPLORER):
         headers["Authorization"] = f"Bearer {os.environ['INTENTS_EXPLORER_JWT']}"
     for attempt in range(retries):
+        if gated and url.startswith(EXPLORER):
+            explorer_slot(wait=True)
         try:
             req = urllib.request.Request(url, data=data, headers=headers)
             # Requests with a key never follow a redirect; public ones may (neardata's
@@ -107,6 +113,85 @@ def get_explorer_txs(**params) -> list[dict]:
     """
     query = urllib.parse.urlencode(params)
     return get_json(f"{EXPLORER}/transactions?{query}")
+
+
+class ExplorerBusy(Exception):
+    """The Explorer slot is taken: a visitor search does not wait for it."""
+
+
+EXPLORER_GAP = float(os.environ.get("EXPLORER_GAP_S", "5"))  # API: 1 request / 5 s
+_explorer = {"lock": threading.Lock(), "last": float("-inf")}
+
+
+def explorer_slot(wait: bool) -> None:
+    """Take the one Explorer slot that the sync and visitor searches share.
+    wait=False raises ExplorerBusy instead of waiting."""
+    with _explorer["lock"]:
+        delay = EXPLORER_GAP - (time.monotonic() - _explorer["last"])
+        if delay > 0:
+            if not wait:
+                raise ExplorerBusy
+            time.sleep(delay)
+        _explorer["last"] = time.monotonic()
+
+
+def search_explorer(key: str) -> dict | None:
+    """Find one swap by its deposit address, intent hash or a NEAR, origin or
+    destination tx hash (Explorer `search`). Only an exact match counts."""
+    explorer_slot(wait=False)
+    query = urllib.parse.urlencode({"search": key, "numberOfTransactions": 5})
+    # one try with the slot we hold: a retry would break the 1 request / 5 s limit
+    for row in (
+        get_json(f"{EXPLORER}/transactions?{query}", retries=1, gated=False) or []
+    ):
+        hashes = row.get("intentHashes") or []
+        keys = {
+            row.get("depositAddress"),
+            *(hashes if isinstance(hashes, list) else [hashes]),
+        }
+        for field in (
+            "nearTxHashes",
+            "originChainTxHashes",
+            "destinationChainTxHashes",
+        ):
+            keys.update(row.get(field) or [])
+        if key in keys:
+            return row
+    return None
+
+
+def get_tx_block(tx_hash: str) -> tuple[int, int] | None:
+    """Get (block height, block time in ns) of a NEAR transaction, or None.
+
+    The public RPC tracks all shards, so it finds the tx with any sender account.
+    """
+    tx = get_json(
+        RPC,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tx",
+            "params": {
+                "tx_hash": tx_hash,
+                "sender_account_id": "intents.near",
+                "wait_until": "NONE",
+            },
+        },
+        retries=2,
+    )
+    block_hash = tx.get("result", {}).get("transaction_outcome", {}).get("block_hash")
+    if not block_hash:
+        return None
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "block",
+        "params": {"block_id": block_hash},
+    }
+    header = get_json(RPC, body, retries=2).get("result", {}).get("header", {})
+    if "height" not in header:
+        return None
+    return header["height"], int(header["timestamp_nanosec"])
 
 
 def iter_explorer_since(start: datetime, page_size: int = 1000, wait: float = 5.5):
