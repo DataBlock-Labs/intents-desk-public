@@ -22,6 +22,9 @@ from .ops import CHAIN_MACRO
 
 MIN_SWAPS, BAD_PCT, NETWORK_PCT, CLEAN_HOURS = 50, 50.0, 10.0, 2
 NETWORK = "(all)"
+MD = re.compile(
+    r"([\\`*_\[\]()!#~])"
+)  # Markdown control characters (md_table escapes <>|)
 NEAR_TX = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{43,44}$")  # base58 hash: safe in a link
 HOUR = timedelta(hours=1)
 
@@ -160,6 +163,11 @@ def _incident(stats, bad_in_hour, partner, start, last, newest) -> dict:
 
 def _pct(part, whole) -> float:
     return round(100 * part / whole, 1) if whole else 0.0
+
+
+def md(v):
+    """Escape Markdown in text from swaps (referral ids, reasons) so it can't make links."""
+    return MD.sub(r"\\\1", v) if isinstance(v, str) else v
 
 
 def short(address: str) -> str:
@@ -395,6 +403,8 @@ def public(inc: dict) -> dict:
         "id": f"{who}@{inc['started_at'][:13]}:00Z",
         "referral": who,
         "partners": [[mask_partner(p), n] for p, n in inc["partners"]],
+        # on-chain txs can name the partner: no evidence while names are masked
+        "evidence": [] if os.environ.get("MASK_PARTNERS") == "1" else inc["evidence"],
     }
 
 
@@ -424,8 +434,8 @@ def markdown(inc: dict) -> str:
     )
     hours = [(f"{h[5:10]} {h[11:16]}", n, p) for h, n, p in inc["hours"]]
     ev = [
-        (e["created_at"][:19].replace("T", " "), e["status"], e["reason"] or "",
-         e["route"], e["amount_in"], e["deposit"],
+        (e["created_at"][:19].replace("T", " "), md(e["status"]), md(e["reason"] or ""),
+         md(e["route"]), md(e["amount_in"]), md(e["deposit"]),
          " ".join(f"[{t[:8]}…](https://nearblocks.io/txns/{t})" for t in e["near_tx"]) or "none")
         for e in inc["evidence"]
     ]  # fmt: skip
@@ -436,13 +446,13 @@ def markdown(inc: dict) -> str:
     )
 
     def esc(s) -> str:  # referral ids come from anyone who makes a swap
-        return report.md_table(["x"], [(s,)]).splitlines()[-1][2:-2]
+        return report.md_table(["x"], [(md(s),)]).splitlines()[-1][2:-2]
 
     return f"""# Incident: {esc(label(inc))}
 
 - **When:** {_when(inc["started_at"])} → {end}
 - **Swaps:** {inc["swaps"]:,}; refunded {inc["refunded"]:,}, failed {inc["failed"]:,} ({inc["bad_pct"]}% bad).{others}
-- **Top reason:** {inc["top_reason"]}. Senders: {inc["senders"] if inc["senders"] is not None else "not counted"}.
+- **Top reason:** {esc(inc["top_reason"] or "–")}. Senders: {inc["senders"] if inc["senders"] is not None else "not counted"}.
 - **Money in:** ${inc["usd_in"]:,.0f} (counted once per attempt; retries repeat the same funds).
 {"- **Top partners:** " + ", ".join(f"{esc(p)} ({n:,} bad)" for p, n in inc["partners"]) if inc["scope"] == "network" else ""}
 
@@ -450,7 +460,7 @@ def markdown(inc: dict) -> str:
 
 ## Routes
 
-{report.md_table(["route", "swaps", "bad %"], [tuple(r) for r in inc["routes"]])}
+{report.md_table(["route", "swaps", "bad %"], [tuple(map(md, r)) for r in inc["routes"]])}
 
 ## Per hour (UTC)
 
@@ -468,8 +478,14 @@ Prepared by Intents Desk (DataBlock). Not financial advice.
 
 
 def slug(incident_id: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "-" for c in incident_id).strip(
-        "-"
+    """A file name per incident. The hash keeps ids like a:pda and a-pda apart."""
+    import hashlib
+
+    name = "".join(c if c.isalnum() or c in "-_" else "-" for c in incident_id)
+    return (
+        name.strip("-")[:120]
+        + "-"
+        + hashlib.sha256(incident_id.encode()).hexdigest()[:8]
     )
 
 

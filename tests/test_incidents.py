@@ -235,3 +235,27 @@ def test_report_escapes_referral_ids_and_drops_bad_hashes(con):
     assert incidents.pick_evidence(rows)[0]["near_tx"] == [
         "7nLmhrycnYcFrTFWm4aABUziPdCwRu9p3kBNR6Q9vf2n"
     ]
+
+
+def test_report_files_do_not_collide_and_links_are_escaped(con, tmp_path, monkeypatch):
+    healthy(con, range(4))
+    bad(con, 0, "a:pda")
+    bad(con, 0, "a-pda")
+    bad(con, 0, "[click](https://evil.example)")
+    incidents.detect(con)
+    incidents.publish(con, send_drafts=False)
+    files = list((tmp_path / "reports" / "incidents").glob("*.md"))
+    assert len(files) == 4  # 3 partners + the network (180 of 1,180 bad)
+    text = "".join(f.read_text() for f in files)
+    assert "[click](https" not in text and "\\[click\\]" in text
+
+
+def test_masked_detail_has_no_evidence(con, monkeypatch, tmp_path):
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    load_explorer_txs(con, raw_swaps(now))
+    incidents.detect(con)
+    [inc] = [i for i in incidents.listing(con) if i["scope"] == "partner"]
+    assert inc["evidence"]
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "s.key"))
+    monkeypatch.setenv("MASK_PARTNERS", "1")
+    assert incidents.public(inc)["evidence"] == []
