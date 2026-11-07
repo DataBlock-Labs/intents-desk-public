@@ -1,0 +1,68 @@
+1
+00:00:00,300 --> 00:00:03,000
+Nov 4, 13:00 UTC.
+
+2
+00:00:03,000 --> 00:00:07,800
+43,500 swaps in one day. 95% came back refunded.
+
+3
+00:00:09,000 --> 00:00:19,000
+A 1Click swap: quote, deposit, intent on NEAR, solver fill.
+
+4
+00:00:19,000 --> 00:00:30,000
+When no solver fills it, the funds go back: a refund.
+
+5
+00:00:31,700 --> 00:00:37,700
+Intents Desk counts every swap, every hour.
+
+6
+00:00:37,700 --> 00:00:43,700
+One partner's swaps: 100% bad for 24 hours.
+
+7
+00:00:43,700 --> 00:00:52,700
+Rule: 50+ swaps and 50% bad in an hour opens an incident.
+
+8
+00:00:53,600 --> 00:00:57,300
+Paste a deposit address or any tx hash.
+
+9
+00:00:57,300 --> 00:01:02,300
+One answer first: what happened to your funds.
+
+10
+00:01:02,300 --> 00:01:12,300
+The timeline and every tx, with its NEAR block.
+
+11
+00:01:12,300 --> 00:01:18,100
+Copy a support message. No addresses in it.
+
+12
+00:01:19,300 --> 00:01:25,300
+Case → intent hash → NEAR block → explorer.
+
+13
+00:01:25,300 --> 00:01:31,800
+Anyone can check it on chain.
+
+14
+00:01:32,500 --> 00:01:38,200
+Incidents get a report for the teams who can fix them.
+
+15
+00:01:38,200 --> 00:01:45,200
+Who should look, block range, commands to reproduce.
+
+16
+00:01:45,200 --> 00:01:49,000
+Download the evidence as CSV or JSON.
+
+17
+00:01:49,700 --> 00:01:57,000
+Intents Desk: data for NEAR Intents support.
+
