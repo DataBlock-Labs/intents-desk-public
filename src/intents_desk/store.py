@@ -157,6 +157,10 @@ def connect(path: str | Path = "data/desk.duckdb") -> duckdb.DuckDBPyConnection:
     from .support import ensure as ensure_support
 
     ensure_support(con)
+    from . import tickets, xpost
+
+    tickets.ensure(con)
+    xpost.ensure(con)
     con.execute(  # fees earned per day; other DataBlock products read the same view
         "CREATE VIEW IF NOT EXISTS ops.daily_revenue AS"
         " SELECT CAST(settled_at AS DATE) AS day, count(*) AS swaps,"

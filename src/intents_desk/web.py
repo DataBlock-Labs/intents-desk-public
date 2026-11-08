@@ -23,7 +23,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import activity, auth, incidents, ops, sources, store, support, telegram
+from . import (
+    activity,
+    auth,
+    incidents,
+    ops,
+    sources,
+    store,
+    support,
+    telegram,
+    tickets,
+    xpost,
+)
 
 PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -44,7 +55,14 @@ MAX_SYNC_HOURS = 24  # first run, or after a long downtime
 RATE_PER_MIN = int(
     os.environ.get("RATE_PER_MIN", "30")
 )  # per client IP, RATE_LIMITED routes
-RATE_LIMITED = ("/api/swap", "/api/quote", "/api/me", "/api/auth/", "/api/activity")
+RATE_LIMITED = (
+    "/api/swap",
+    "/api/quote",
+    "/api/me",
+    "/api/auth/",
+    "/api/activity",
+    "/api/ticket",
+)
 FEED_SECONDS = 3600
 REVENUE_SECONDS = 300
 BACKUP_SECONDS = 24 * 3600
@@ -129,12 +147,12 @@ def db():
     return _db["con"].cursor()
 
 
-def mask_partner(partner: str) -> str:
-    """Give a stable public alias for a referral id when MASK_PARTNERS=1.
+def mask_partner(partner: str, force: bool = False) -> str:
+    """Give a stable public alias for a referral id when MASK_PARTNERS=1 (or force).
 
     Partner names stay private until the partner has been told (AGENTS.md).
     """
-    if os.environ.get("MASK_PARTNERS") != "1" or partner == "(none)":
+    if not (force or os.environ.get("MASK_PARTNERS") == "1") or partner == "(none)":
         return partner
     key = store._ref_secret() + partner
     return "partner-" + hashlib.sha256(key.encode()).hexdigest()[:6]
@@ -726,10 +744,64 @@ def feed_once() -> int:
             posts += sources.get_x_posts(10)
             used.append("x")
         store.save_feed(cur, posts)
-        run.update(rows=len(posts), sources=used)
+        opened = tickets_from_posts(cur, posts)
+        run.update(rows=len(posts), sources=used, tickets=opened)
     _status.update(feed_at=datetime.now(UTC).isoformat(timespec="seconds"))
     _status["feed_sources"] = used
     return len(posts)
+
+
+FEED_LOOKUPS = 5  # swap keys checked per feed run (1Click and the Explorer slot)
+
+
+def tickets_from_posts(con, posts: list[dict]) -> int:
+    """Open a public ticket for each swap a feed post names; draft an X reply for the owner."""
+    budget, opened = FEED_LOOKUPS, 0
+    for post in posts:
+        source = "x" if str(post.get("id", "")).startswith("x:") else "reddit"
+        url = post.get("url")
+        if not url or con.execute("SELECT 1 FROM app.ticket WHERE source_url = ?", [url]).fetchone():  # fmt: skip
+            continue
+        for key in tickets.keys_in(post.get("text", "")):
+            if budget <= 0:
+                return opened
+            budget -= 1
+            ticket = tickets.report(con, key, source, url)
+            if not ticket or not ticket["new"]:
+                continue
+            opened += 1
+            telegram.channel_post(tickets.channel_text(ticket))
+            chat = incidents.owner_chat(con) if source == "x" else None
+            if chat is not None:
+                offer_reply(con, chat, ticket, str(post["id"]).removeprefix("x:"))
+            break  # one ticket per post
+    return opened
+
+
+def offer_reply(con, chat: int, ticket: dict, post_id: str) -> None:
+    reason = f" ({ticket['reason']})" if ticket["reason"] else ""
+    head = f"We checked this NEAR Intents swap: {ticket['status']}{reason}. "
+    tail = f" Public ticket {ticket['ref'][:8]} on Intents Desk."
+    answer = ticket["answer"][: xpost.MAX_CHARS - len(head) - len(tail)]
+    try:
+        xpost.offer(con, chat, "reply", head + answer + tail, tickets.link(ticket["ref"]), post_id)  # fmt: skip
+    except ValueError:  # a post id that is not numeric, or text with a link
+        pass
+
+
+TICKET_SECONDS = 600
+
+
+def tickets_once() -> int:
+    """Re-check unfinished public tickets; post each status change to the channel."""
+    cur = db()
+    with ops.audited(cur, PRODUCT, "tickets") as run:
+        changes = tickets.refresh(cur)
+        for change in changes:
+            case = support.saved(cur, change["ref"]) or {}
+            telegram.channel_post(tickets.channel_text({"ref": change["ref"], "route": case.get("route")}, change))  # fmt: skip
+        run["rows"] = len(changes)
+    return len(changes)
 
 
 def backup_once() -> int:
@@ -760,6 +832,10 @@ def alerts_once() -> int:
 def _bot_loop() -> None:
     """Long-poll Telegram for /start, /status and /stop. Errors never print the token."""
     offset = 0
+    try:
+        telegram.set_commands()
+    except telegram.TelegramError:
+        pass  # the menu is a convenience; the commands work without it
     while True:
         try:
             offset = telegram.poll_once(db(), offset)
@@ -959,6 +1035,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(*lookup(address))
         elif path == "/api/auth/challenge":
             self.send_json(200, auth.new_challenge())
+        elif path == "/api/tickets":
+            self.send_json(200, {"tickets": tickets.listing(db())})
         elif path == "/api/activity":
             account = q.get("account", [""])[0].strip().lower()
             if not NEAR_ACCOUNT.match(account):
@@ -1051,6 +1129,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/auth/logout":
             cookie = "session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
             self.send_json(200, {"ok": True}, Set_Cookie=cookie)
+        elif path == "/api/ticket":  # "Report publicly" on a case
+            key = str(body.get("key", "")).strip()
+            if len(key) > 128 or not tickets.KEY.fullmatch(key):
+                self.send_json(400, {"error": "Not a deposit address or tx hash."})
+                return
+            ticket = tickets.report(db(), key, "web")
+            if not ticket:
+                self.send_json(404, {"error": "1Click does not know this address or hash."})  # fmt: skip
+                return
+            if ticket["new"]:
+                telegram.channel_post(tickets.channel_text(ticket))
+            self.send_json(200, {"ref": ticket["ref"], "new": ticket["new"], "link": tickets.link(ticket["ref"])})  # fmt: skip
         elif path == "/api/me/telegram/autowatch":
             account = self.account()
             if not account:
@@ -1117,6 +1207,9 @@ def serve(
             target=_loop,
             args=("autowatch", autowatch_once, AUTOWATCH_SECONDS),
             daemon=True,
+        ).start()
+        threading.Thread(
+            target=_loop, args=("tickets", tickets_once, TICKET_SECONDS), daemon=True
         ).start()
         threading.Thread(
             target=_loop, args=("alerts", alerts_once, ALERT_SECONDS), daemon=True

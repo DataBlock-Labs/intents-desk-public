@@ -185,8 +185,11 @@ def test_drafts_once_on_open_and_once_on_close(con, tg, tmp_path, monkeypatch):
     opened, closed = (text for _chat, text in tg.sent)
     assert "Heads-up" in opened and "Resolved" in closed
     for text in (opened, closed):
-        body = text.split("First reply:")[0]
+        body = text.split("Link (only with the link button):")[0]
         assert "http" not in body  # no links in the post body
+        assert "Nothing is posted until you press a button" in text
+    labels = [b["text"] for row in tg.buttons[0]["inline_keyboard"] for b in row]
+    assert labels == ["Post ($0.015)", "Post + link reply ($0.215)", "Skip"]
     assert list((tmp_path / "reports" / "incidents").glob("*.md"))
     assert list((tmp_path / "vault" / "Incidents").glob("*.md"))
 

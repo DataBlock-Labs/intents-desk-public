@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from . import report, sources, telegram
+from . import report, sources, telegram, xpost
 from .ops import CHAIN_MACRO
 
 MIN_SWAPS, BAD_PCT, NETWORK_PCT, CLEAN_HOURS = 50, 50.0, 10.0, 2
@@ -399,14 +399,14 @@ def _when(iso: str) -> str:
     return datetime.fromisoformat(iso).strftime("%b %d %H:%M UTC")
 
 
-def label(inc: dict) -> str:
+def label(inc: dict, masked: bool = False) -> str:
+    """The partner as shown. masked=True always gives the alias: a referral id is text
+    anyone can set when they swap, so it never goes into the public channel."""
     from .web import mask_partner  # the public deploy shows aliases (MASK_PARTNERS=1)
 
-    return (
-        "the whole network"
-        if inc["scope"] == "network"
-        else mask_partner(inc["referral"])
-    )
+    if inc["scope"] == "network":
+        return "the whole network"
+    return mask_partner(inc["referral"], force=masked)
 
 
 def public(inc: dict) -> dict:
@@ -597,9 +597,30 @@ def write_files(inc: dict) -> list[str]:
     return paths
 
 
+def channel_text(inc: dict) -> str:
+    """The public channel post: always the alias. The incident link holds the partner
+    as the page shows it, so it is added only when the page masks names too."""
+    tail = f"\n{link(inc)}" if os.environ.get("MASK_PARTNERS") == "1" else ""
+    return post_text(inc, masked=True) + tail
+
+
+def link(inc: dict) -> str:
+    host = os.environ.get("PUBLIC_HOST", "localhost:8420")
+    return f"https://{host}/#incident={quote(public(inc)['id'])}"
+
+
 def draft(inc: dict) -> str:
-    """X post text for the owner to post by hand. No links in the body (X rule)."""
-    who = label(inc)
+    """X post text plus its first-reply link, as one message."""
+    return (
+        "X draft (post it yourself, or ignore):\n\n"
+        + post_text(inc)
+        + f"\n\nFirst reply: {link(inc)}"
+    )
+
+
+def post_text(inc: dict, masked: bool = False) -> str:
+    """The public post body. No link (X bills links), no partner name when masked."""
+    who = label(inc, masked)
     others = (
         f" Other partners: {inc['others_pct']}%."
         if inc["others_pct"] is not None
@@ -625,12 +646,7 @@ def draft(inc: dict) -> str:
             f" swaps from {who} are refunded or failed ({inc['top_reason']}),"
             f" {inc['swaps']:,} swaps so far.{failed}{others}"
         )
-    host = os.environ.get("PUBLIC_HOST", "localhost:8420")
-    return (
-        "X draft (post it yourself, or ignore):\n\n"
-        + body
-        + f"\n\nFirst reply: https://{host}/#incident={quote(public(inc)['id'])}"
-    )
+    return body
 
 
 def owner_chat(con) -> int | None:
@@ -652,7 +668,11 @@ def publish(con, ids: list[str] | None = None, send_drafts: bool = True) -> dict
             skipped = "owner Telegram chat not linked"
             continue
         if send_drafts:
-            telegram.send(chat, draft(inc))
+            telegram.channel_post(channel_text(inc), "incident")
+            try:  # the owner approves each X post with a button
+                xpost.offer(con, chat, "incident", post_text(inc), link(inc))
+            except ValueError:  # over 280 characters: the plain draft to copy
+                telegram.send(chat, draft(inc))
             sent += 1
         con.execute(
             "UPDATE ops.incident SET drafted_open = true"

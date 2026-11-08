@@ -198,6 +198,20 @@ keeping them.
   watched swaps, `/stop` unlinks. To enable on a server, create a bot with @BotFather and set
   `TELEGRAM_BOT_TOKEN` (`make serve` reads `~/.config/intents-desk/telegram.env`).
 
+## Public tickets, Telegram reports and X
+
+- **Public tickets:** a ticket is a support case someone chose to make public.
+  - **Opened by:** "Report publicly" on a case; `/report <deposit address or tx hash>` in the Telegram bot; or automatically, when an X or Reddit post in the feed names a swap that 1Click knows.
+  - **Shown in:** the Public tickets panel (`/api/tickets`), with status, reason, route and source. The deposit address stays on the server.
+  - **Updated:** every 10 minutes, until the swap is final.
+- **Telegram:**
+  - The commands are `/report`, `/status`, `/stop` and `/help`; they show in the bot menu.
+  - With `TELEGRAM_CHANNEL=@yourchannel` (the bot must be an admin there), new tickets, ticket status changes and incident open/close are posted to that public channel automatically. Partner names stay masked, with no addresses and at most 20 posts an hour.
+- **X:**
+  - The owner's Telegram gets each incident post, and each reply to an X post that named a swap, as a draft with buttons: Post ($0.015), Post + link ($0.20–0.215) and Skip.
+  - Only a press from the owner's chat counts. Each draft is single use and expires after 24 h.
+  - Posting runs `xurl --auth oauth1` and needs `X_POST=1` on the server; the keys stay in `~/.xurl`. Nothing is posted without a press.
+
 ## Incident log
 
 - **Rule:** an incident opens when a partner has at least 50 swaps in an hour and at least

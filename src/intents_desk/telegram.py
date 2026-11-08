@@ -11,6 +11,7 @@ raw exception text into logs or error messages.
 import json
 import os
 import secrets
+import time
 import urllib.error
 import urllib.request
 
@@ -18,6 +19,22 @@ from . import sources
 
 CODE_MINUTES = 10
 MAX_CHECKS_PER_RUN = 100
+# Public channel posts per hour, per kind: ticket spam cannot crowd out incident posts.
+CHANNEL_PER_HOUR = {"ticket": 15, "incident": 10}
+_channel_sent: dict[str, list[float]] = {}  # shortcut: in memory, one server process
+COMMANDS = [
+    ("report", "Report a swap: /report <deposit address or tx hash>"),
+    ("status", "Your watched swaps"),
+    ("stop", "Unlink this chat"),
+    ("help", "What this bot does"),
+]
+HELP = (
+    "Intents Desk bot.\n"
+    "/report <deposit address or tx hash>: check a NEAR Intents (1Click) swap and open a"
+    " public ticket for it. The ticket shows status and reason, never your address.\n"
+    "/status: your watched swaps (after you link this chat on Intents Desk).\n"
+    "/stop: unlink this chat."
+)
 
 
 class TelegramError(RuntimeError):
@@ -48,8 +65,40 @@ def call(method: str, params: dict, timeout: int = 35) -> dict:
     return data["result"]
 
 
-def send(chat_id: int, text: str) -> None:
-    call("sendMessage", {"chat_id": chat_id, "text": text[:4000]})  # plain text
+def send(chat_id: int | str, text: str, buttons: list | None = None) -> None:
+    """Plain text; `buttons` is rows of (label, callback data) shown under the message."""
+    params: dict = {"chat_id": chat_id, "text": text[:4000]}
+    if buttons:
+        params["reply_markup"] = {
+            "inline_keyboard": [
+                [{"text": label, "callback_data": data} for label, data in row]
+                for row in buttons
+            ]
+        }
+    call("sendMessage", params)
+
+
+def channel_post(text: str, kind: str = "ticket") -> bool:
+    """Post to the public channel (TELEGRAM_CHANNEL). False when off or over the cap."""
+    channel = os.environ.get("TELEGRAM_CHANNEL")
+    if not (channel and enabled()):
+        return False
+    now = time.time()
+    sent = _channel_sent.setdefault(kind, [])
+    sent[:] = [t for t in sent if now - t < 3600]
+    if len(sent) >= CHANNEL_PER_HOUR[kind]:
+        return False
+    send(channel, text)
+    sent.append(now)
+    return True
+
+
+def set_commands() -> None:
+    """Show the commands in the bot menu."""
+    call(
+        "setMyCommands",
+        {"commands": [{"command": c, "description": d} for c, d in COMMANDS]},
+    )
 
 
 def new_link(con, account: str) -> str:
@@ -89,13 +138,27 @@ def linked_chat(con, account: str) -> int | None:
 
 
 def handle_update(con, update: dict) -> None:
-    """React to one Telegram update: /start <code>, /status or /stop."""
+    """React to one Telegram update: a button press, /start <code>, /report, /help,
+    /status or /stop."""
+    if update.get("callback_query"):
+        handle_button(con, update["callback_query"])
+        return
     msg = update.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     text = str(msg.get("text") or "").strip()
     if not isinstance(chat_id, int) or not text.startswith("/"):
         return
     command, _, arg = text.partition(" ")
+    command = command.split("@", 1)[0]  # /report@IntentsDeskBot in groups
+    if command == "/help":
+        send(chat_id, HELP)
+        return
+    if command == "/report":
+        report_command(con, chat_id, arg.strip())
+        return
+    if command == "/start" and not arg.strip():
+        send(chat_id, HELP)
+        return
     if command == "/start":
         row = con.execute(
             "DELETE FROM app.link_code WHERE code = ? AND expires_at >= now() RETURNING account_id",
@@ -137,13 +200,78 @@ def handle_update(con, update: dict) -> None:
         send(chat_id, "\n".join(lines))
 
 
+def report_command(con, chat_id: int, key: str) -> None:
+    """/report <key>: open a public ticket and answer with its status and link."""
+    from . import tickets
+    from .web import allow
+
+    if not allow(f"tg:{chat_id}"):  # each report costs 1Click and Explorer calls
+        send(chat_id, "Too many reports. Wait a minute.")
+        return
+    if not key or len(key) > 128 or not tickets.KEY.fullmatch(key):
+        send(chat_id, "Send /report followed by the deposit address or tx hash of the swap.")  # fmt: skip
+        return
+    ticket = tickets.report(con, key, "telegram")
+    if not ticket:
+        send(chat_id, "1Click does not know this address or hash. Check it and try again.")  # fmt: skip
+        return
+    reason = f" ({ticket['reason']})" if ticket["reason"] else ""
+    send(
+        chat_id,
+        f"Ticket {ticket['ref'][:8]}: {ticket['status']}{reason}.\n{ticket['answer']}\n"
+        f"Next: {ticket['next'] or '–'}\nPublic ticket (no address shown): {tickets.link(ticket['ref'])}",
+    )
+    account = con.execute(
+        "SELECT account_id FROM app.telegram WHERE chat_id = ?", [chat_id]
+    ).fetchone()
+    address = con.execute(
+        "SELECT deposit_address FROM app.ticket WHERE ref = ?", [ticket["ref"]]
+    ).fetchone()[0]
+    # Watch only when the user typed the deposit address itself: a watch list shows
+    # addresses, and a public tx hash must never reveal someone's deposit address.
+    if account and address == key:
+        from . import store
+
+        try:
+            store.set_watch(con, account[0], address, True)
+        except ValueError:
+            pass
+    if ticket["new"]:
+        channel_post(tickets.channel_text(ticket))
+
+
+def handle_button(con, query: dict) -> None:
+    """An inline button press. Only the owner's chat may approve X posts."""
+    from . import incidents, xpost
+
+    chat_id = ((query.get("message") or {}).get("chat") or {}).get("id")
+    user_id = (query.get("from") or {}).get("id")
+    data = str(query.get("data") or "")
+    try:
+        call("answerCallbackQuery", {"callback_query_id": query.get("id")}, timeout=10)
+    except TelegramError:
+        pass
+    owner = incidents.owner_chat(con)
+    if owner is None or chat_id != owner or user_id != owner:
+        return  # not the owner's own private chat: ignore silently
+    kind, _, rest = data.partition(":")
+    action, _, draft_id = rest.partition(":")
+    if kind != "x" or not draft_id:
+        return
+    send(chat_id, xpost.decide(con, draft_id, action))
+
+
 def poll_once(con, offset: int, wait: int = 25) -> int:
     """Read new updates (long poll) and handle them. Return the next offset."""
     for update in call(
         "getUpdates", {"offset": offset, "timeout": wait}, timeout=wait + 10
     ):
         offset = max(offset, update["update_id"] + 1)
-        handle_update(con, update)
+        try:
+            handle_update(con, update)
+        except (TelegramError, OSError, ValueError, RuntimeError, KeyError) as exc:
+            # skip it: a reply we cannot send must not replay the update forever
+            print(f"[bot] update skipped: {type(exc).__name__}", flush=True)
     return offset
 
 
