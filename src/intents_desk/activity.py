@@ -60,6 +60,27 @@ def _transfer(actions: list) -> int | None:
 
 
 def describe(item: dict, account: str) -> dict:
+    """One line for one transaction; never raises.
+
+    Transaction args are written by anyone, so malformed ones (a list where an object is
+    expected, an amount that is not a number) give a plain fallback line instead of an error.
+    """
+    try:
+        return _describe(item, account)
+    except (ValueError, TypeError, AttributeError, KeyError):
+        tx = item.get("transaction") if isinstance(item, dict) else None
+        tx = tx if isinstance(tx, dict) else {}
+        return {
+            "tx": str(tx.get("hash", "")),
+            "when": "",
+            "ok": False,
+            "kind": "other",
+            "text": "A transaction this page cannot read",
+            "deposit": None,
+        }
+
+
+def _describe(item: dict, account: str) -> dict:
     """One line for one transaction. `deposit` is set when funds went to a deposit address."""
     tx = item["transaction"]
     signer, receiver, actions = (
@@ -150,7 +171,11 @@ def _intents_for(args: dict, account: str) -> list[str]:
             msg = json.loads((signed.get("payload") or {}).get("message", "{}"))
         except (ValueError, TypeError, AttributeError):
             continue
-        for it in msg.get("intents", []):
+        if not isinstance(msg, dict) or not isinstance(msg.get("intents"), list):
+            continue
+        for it in msg["intents"]:
+            if not isinstance(it, dict):
+                continue
             kind = it.get("intent", "")
             if it.get("receiver_id") == account and kind == "native_withdraw":
                 out.append(f"sent {near(it.get('amount', 0))} to this account")

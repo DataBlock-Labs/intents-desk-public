@@ -100,3 +100,40 @@ def test_autowatch_watches_new_swaps_once_and_tells_telegram(txapi, monkeypatch)
     code, d = post(txapi, {"on": False}, path="/api/me/telegram/autowatch")
     assert code == 200 and d == {"auto_watch": False}
     assert web.autowatch_once() == 0  # turned off
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        [call("ft_transfer", {"receiver_id": DEP, "amount": "not-a-number"})],
+        [call("ft_transfer", {"receiver_id": ["a", "list"], "amount": "1"})],
+        [call("execute_intents", {"signed": [{"payload": {"message": "[1, 2]"}}]})],
+        [
+            {
+                "FunctionCall": {
+                    "method_name": "ft_transfer",
+                    "args": "e30=",
+                    "deposit": "x",
+                }
+            }
+        ],
+        ["not-an-object", 7],
+    ],
+)
+def test_describe_never_raises_on_hostile_args(actions):
+    receiver = (
+        "intents.near"
+        if actions[0] and isinstance(actions[0], dict) and "execute" in str(actions[0])
+        else "usdt.tether-token.near"
+    )
+    line = activity.describe(item(ME, receiver, actions), ME)
+    assert isinstance(line["text"], str) and line["text"]
+    assert line["deposit"] in (None, DEP)
+
+
+def test_failed_relayed_tx_is_not_ours():
+    relayed = [{"Delegate": {"delegate_action": {"sender_id": ME, "receiver_id": "x.near", "actions": [{"Transfer": {"deposit": str(10**24)}}]}}}]  # fmt: skip
+    it = item("relayer.near", ME, relayed)
+    it["is_success"] = False
+    line = activity.describe(it, ME)
+    assert line["deposit"] is None and "relayer" in line["text"]

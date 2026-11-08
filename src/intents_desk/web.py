@@ -529,9 +529,25 @@ def autowatch_once() -> int:
     day_ago = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
     for account, chat in accounts:
         watched = set(store.watch_list(cur, account))
-        for line in account_activity(account, fresh=True):
+        try:
+            lines = account_activity(account, fresh=True)
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+        ) as exc:  # one account never blocks the rest
+            print(f"[autowatch] {account}: {type(exc).__name__}", file=sys.stderr)
+            continue
+        for line in lines:
             address, status = line["deposit"], line.get("swap_status")
-            if not status or address in watched or line["when"] < day_ago:
+            # Only successful transactions signed by this account count.
+            if (
+                not status
+                or not line["ok"]
+                or address in watched
+                or line["when"] < day_ago
+            ):
                 continue
             try:
                 store.set_watch(cur, account, address, True)
