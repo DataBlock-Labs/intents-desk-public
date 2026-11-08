@@ -245,6 +245,9 @@ class Fake:
                     self.reply(200, {"account_txs": rows})
                     return
                 if p == "/txapi/transactions":
+                    if len(body["tx_hashes"]) > 20:  # the real limit
+                        self.reply(400, {"error": "Too many transactions requested. Limit is 20"})  # fmt: skip
+                        return
                     txs = account_txs()
                     self.reply(200, {"transactions": [txs[h] for h in body["tx_hashes"] if h in txs]})  # fmt: skip
                     return

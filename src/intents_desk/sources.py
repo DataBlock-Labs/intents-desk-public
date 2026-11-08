@@ -305,8 +305,10 @@ def get_account_txs(account: str, limit: int = 15) -> list[dict]:
     ok = {t["transaction_hash"]: t.get("is_success", True) for t in index}
     if not ok:
         return []
-    found = get_json(f"{TXAPI}/transactions", {"tx_hashes": list(ok)}, retries=2)
-    txs = [t for t in found.get("transactions", []) if t and "transaction" in t]
+    hashes, txs = list(ok), []
+    for i in range(0, len(hashes), 20):  # the API takes at most 20 hashes per request
+        found = get_json(f"{TXAPI}/transactions", {"tx_hashes": hashes[i : i + 20]}, retries=2)  # fmt: skip
+        txs += [t for t in found.get("transactions", []) if t and "transaction" in t]
     for t in txs:
         t["is_success"] = ok.get(t["transaction"]["hash"], True)
     return sorted(txs, key=lambda t: -int(t["execution_outcome"]["block_timestamp"]))

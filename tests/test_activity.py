@@ -147,3 +147,18 @@ def test_public_account_lookup_lists_activity(txapi):
     assert any(a.get("swap_status") == "REFUNDED" for a in d["activity"])
     for bad in ("alice", "0xabc.near.", "a" * 64, "alice.near;drop"):
         assert get(txapi, f"/api/activity?account={bad}", account=None)[0] == 400
+
+
+def test_account_txs_are_fetched_in_batches_of_20(monkeypatch):
+    calls = []
+
+    def fake_get(url, body, retries=2):
+        calls.append(body)
+        if url.endswith("/account"):
+            return {"account_txs": [{"transaction_hash": f"h{i}"} for i in range(45)]}
+        assert len(body["tx_hashes"]) <= 20
+        return {"transactions": [item(ME, "x.near", [], h) | {"is_success": True} for h in body["tx_hashes"]]}  # fmt: skip
+
+    monkeypatch.setattr(sources, "get_json", fake_get)
+    assert len(sources.get_account_txs(ME, limit=45)) == 45
+    assert [len(c["tx_hashes"]) for c in calls[1:]] == [20, 20, 5]
