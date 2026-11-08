@@ -173,6 +173,14 @@ def short(address: str) -> str:
     return f"{address[:6]}…{address[-4:]}" if address and len(address) > 12 else address
 
 
+def _hashes(value) -> list[str]:
+    """Up to 2 tx hashes that are safe to show and link (no URL or markup text)."""
+    from .support import HASH
+
+    values = value if isinstance(value, list) else [value] if value else []
+    return [str(v) for v in values if HASH.match(str(v))][:2]
+
+
 def pick_evidence(rows: list[dict]) -> list[dict]:
     """Choose a small sample of swaps that proves an incident, with public tx hashes:
     the first and last 3 of each status, and the first bad swap of every hour."""
@@ -200,6 +208,12 @@ def pick_evidence(rows: list[dict]) -> list[dict]:
             "near_tx": [
                 t for t in r.get("nearTxHashes") or [] if NEAR_TX.match(str(t))
             ][:2],
+            "origin_tx": _hashes(r.get("originChainTxHashes")),
+            "dest_tx": _hashes(r.get("destinationChainTxHashes")),
+            "intent": _hashes(r.get("intentHashes"))[:1],
+            "deposit_type": r.get("depositType"),
+            "refund_type": r.get("refundType"),
+            "block": None,  # filled by support.add_blocks
         }
         for r in sorted(keep.values(), key=lambda r: r["createdAt"])
     ]
@@ -249,6 +263,9 @@ def save(
         evidence = pick_evidence(rows)
         if complete:
             senders = len({r.get("refundTo") for r in rows if r.get("refundTo")})
+    from .support import add_blocks
+
+    evidence = add_blocks(con, evidence)
     con.execute(
         """
         INSERT INTO ops.incident (id, scope, referral, started_at, last_bad_hour, ended_at,
@@ -404,7 +421,54 @@ def public(inc: dict) -> dict:
         "partners": [[mask_partner(p), n] for p, n in inc["partners"]],
         # on-chain txs can name the partner: no evidence while names are masked
         "evidence": [] if os.environ.get("MASK_PARTNERS") == "1" else inc["evidence"],
+        "reproduce": "" if os.environ.get("MASK_PARTNERS") == "1" else reproduce(inc),
+        "blocks": None if os.environ.get("MASK_PARTNERS") == "1" else block_range(inc),
+        "who": who_should_look(inc),
     }
+
+
+def block_range(inc: dict) -> list[int] | None:
+    """[first, last] NEAR block of the evidence, so an engineer can replay it."""
+    blocks = [e["block"] for e in inc["evidence"] if e.get("block")]
+    return [min(blocks), max(blocks)] if blocks else None
+
+
+def reproduce(inc: dict) -> str:
+    """Shell commands that fetch the same data again. The referral is URL-encoded, so
+    it cannot break out of the quotes; keys stay in environment variables."""
+    start = inc["started_at"][:19] + "Z"
+    end = (datetime.fromisoformat(inc["last_bad_hour"]) + HOUR).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    who = (
+        ""
+        if inc["scope"] == "network"
+        else f"referral={quote(inc['referral'], safe='')}&"
+    )
+    tx = next(
+        (e["near_tx"][0] for e in inc["evidence"] if e["near_tx"]), "<NEAR tx hash>"
+    )
+    return f"""# 1. Every swap in the window (Explorer API: 1 request every 5 s, 1000 per page)
+curl -s -H "Authorization: Bearer $INTENTS_EXPLORER_JWT" \\
+  "https://explorer.near-intents.org/api/v0/transactions?{who}startTimestamp={start}&endTimestamp={end}&numberOfTransactions=1000"
+# 2. One swap, by its deposit address (from step 1)
+curl -s "https://1click.chaindefuser.com/v0/status?depositAddress=$DEPOSIT_ADDRESS"
+# 3. One NEAR transaction with all receipts and logs
+curl -s https://rpc.mainnet.near.org -H 'content-type: application/json' \\
+  -d '{{"jsonrpc":"2.0","id":1,"method":"EXPERIMENTAL_tx_status","params":{{"tx_hash":"{tx}","sender_account_id":"intents.near","wait_until":"FINAL"}}}}'"""  # fmt: skip
+
+
+def who_should_look(inc: dict) -> list[list[str]]:
+    """Which team can act on this incident, and with which data."""
+    kinds = Counter(f"deposit {e.get('deposit_type')}, refund {e.get('refund_type')}" for e in inc["evidence"] if e.get("deposit_type"))  # fmt: skip
+    types = f" Sample: {kinds.most_common(1)[0][0]}." if kinds else ""
+    rows = [
+        ["1Click / NEAR Intents", f"Reason {inc['top_reason'] or '–'}; sample intent hashes and NEAR blocks."],
+        ["Solvers", "Routes and amounts that were not filled (Routes table)."],
+    ]  # fmt: skip
+    if inc["scope"] == "partner":
+        rows.insert(0, ["Wallet or widget team (referral owner)", f"Their swaps only, same hours.{types}"])  # fmt: skip
+    return rows
 
 
 def find_public(con, public_id: str) -> dict | None:
@@ -413,11 +477,13 @@ def find_public(con, public_id: str) -> dict | None:
     )
 
 
-def chart(inc: dict) -> str:
+def chart(inc: dict, swaps: bool = False) -> str:
+    """Bad % per hour, or swaps per hour: two charts, never one with two y axes."""
     hours = [f"{h[5:10]} {h[11:16]}" for h, _n, _p in inc["hours"]]
+    name, i = ("swaps", 1) if swaps else ("refunded or failed %", 2)
     return report.line_chart(
         hours,
-        [("refunded or failed %", [p for _h, _n, p in inc["hours"]], "s1")],
+        [(name, [row[i] for row in inc["hours"]], "s1")],
         f"Incident: {label(inc)}",
         "NEAR Intents Explorer API, via Intents Desk",
     )
@@ -435,9 +501,18 @@ def markdown(inc: dict) -> str:
     ev = [
         (e["created_at"][:19].replace("T", " "), md(e["status"]), md(e["reason"] or ""),
          md(e["route"]), md(e["amount_in"]), md(e["deposit"]),
-         " ".join(f"[{t[:8]}…](https://nearblocks.io/txns/{t})" for t in e["near_tx"]) or "none")
+         " ".join(f"[{t[:8]}…](https://nearblocks.io/txns/{t})" for t in e["near_tx"]) or "none",
+         f"{e['block']:,}" if e.get("block") else "–",
+         " ".join(f"`{t}`" for t in e.get("origin_tx", [])) or "–",
+         " ".join(f"`{t}`" for t in e.get("intent", [])) or "–")
         for e in inc["evidence"]
     ]  # fmt: skip
+    blocks = block_range(inc)
+    span = (
+        f"- **NEAR blocks:** {blocks[0]:,} → {blocks[1]:,} (first and last sample tx)\n"
+        if blocks
+        else ""
+    )
     others = (
         f" Partners without an incident, same hours: {inc['others_pct']}%."
         if inc["others_pct"] is not None
@@ -454,6 +529,12 @@ def markdown(inc: dict) -> str:
 - **Top reason:** {esc(inc["top_reason"] or "–")}. Senders: {inc["senders"] if inc["senders"] is not None else "not counted"}.
 - **Money in:** ${inc["usd_in"]:,.0f} (counted once per attempt; retries repeat the same funds).
 {"- **Top partners:** " + ", ".join(f"{esc(p)} ({n:,} bad)" for p, n in inc["partners"]) if inc["scope"] == "network" else ""}
+{span}
+## Who should look
+
+{report.md_table(["team", "what to check"], [(md(a), md(b)) for a, b in who_should_look(inc)])}
+
+![Swaps per hour](charts/{slug(inc["id"])}-swaps.svg)
 
 ![Refunded or failed share per hour](charts/{slug(inc["id"])}.svg)
 
@@ -467,10 +548,15 @@ def markdown(inc: dict) -> str:
 
 ## Evidence: sample swaps with NEAR transactions
 
-{report.md_table(["created (UTC)", "status", "reason", "route", "amount", "deposit", "NEAR tx"], ev) if ev else "No raw swaps were stored for this incident. Run `intents-desk incidents --evidence <id>`."}
+{report.md_table(["created (UTC)", "status", "reason", "route", "amount", "deposit", "NEAR tx", "block", "origin tx", "intent"], ev) if ev else "No raw swaps were stored for this incident. Run `intents-desk incidents --evidence <id>`."}
 {failed_note}
 
-Check it yourself: Explorer API `GET /api/v0/transactions?referral=<id>&startTimestamp=…`.
+## Reproduce
+
+```sh
+{reproduce(inc)}
+```
+
 Rule: at least {MIN_SWAPS} swaps and {BAD_PCT:.0f}% refunded or failed in an hour (network: over {NETWORK_PCT:.0f}%).
 Prepared by Intents Desk (DataBlock). Not financial advice.
 """
@@ -504,6 +590,9 @@ def write_files(inc: dict) -> list[str]:
         path.write_text(text)
         (folder / "charts").mkdir(exist_ok=True)
         (folder / "charts" / f"{slug(inc['id'])}.svg").write_text(chart(inc))
+        (folder / "charts" / f"{slug(inc['id'])}-swaps.svg").write_text(
+            chart(inc, swaps=True)
+        )
         paths.append(str(path))
     return paths
 

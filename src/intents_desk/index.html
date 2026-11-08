@@ -69,9 +69,16 @@
   th { color: var(--fg-3); font-weight: 500; font-size: 12px; } td.n, th.n { text-align: right; }
   .s-SUCCESS { color: var(--ok); } .s-REFUNDED, .s-PROCESSING, .s-PENDING_DEPOSIT, .s-INCOMPLETE_DEPOSIT { color: var(--warn); } .s-FAILED { color: var(--bad); }
   .alert { color: var(--bad); font-weight: 700; font-size: 11px; border: 1px solid var(--bad); padding: 0 4px; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--s1) var(--s4); margin: var(--s3) 0 0; } dt { color: var(--fg-3); } dd { margin: 0; word-break: break-all; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--s1) var(--s4); margin: var(--s3) 0 0; } dt { color: var(--fg-3); } dd { margin: 0; overflow-wrap: anywhere; }
   .next { margin-top: var(--s3); padding: var(--s3); border-left: 2px solid var(--act); background: var(--bg-2); }
   .card { border: 1px solid var(--rule); padding: var(--s4); margin-top: var(--s3); }
+  .answer { font-size: 15px; margin: var(--s3) 0 0; }
+  ol.timeline { list-style: none; margin: var(--s3) 0 0; padding: 0; border-left: 1px solid var(--rule-2); }
+  ol.timeline li { position: relative; padding: 0 0 var(--s2) var(--s4); }
+  ol.timeline li::before { content: ""; position: absolute; left: -5px; top: .55em; width: 9px; height: 9px; background: var(--act); }
+  ol.timeline li.no::before { background: var(--bg); border: 1px solid var(--fg-3); }
+  .actions { display: flex; gap: var(--s2); flex-wrap: wrap; margin-top: var(--s3); }
+  pre.repro { overflow-x: auto; margin: 0; padding: var(--s3); border: 1px solid var(--rule); background: var(--bg-2); font: 12px/1.5 var(--mono); }
 
   .bars { display: flex; align-items: flex-end; gap: 2px; height: 72px; margin: var(--s2) 0; border-bottom: 1px solid var(--rule); }
   .bars span { flex: 1; background: var(--data); min-height: 2px; }
@@ -114,11 +121,13 @@
     <section aria-labelledby="lookup-h">
       <h2 id="lookup-h">Where's my swap?</h2>
       <form id="lookup">
-        <label for="addr">Deposit address from your NEAR Intents (1Click) swap</label>
-        <input id="addr" name="address" autocomplete="off" spellcheck="false" placeholder="e.g. TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq" required>
+        <label for="addr">Deposit address or transaction hash of your NEAR Intents (1Click) swap</label>
+        <input id="addr" name="address" autocomplete="off" spellcheck="false" placeholder="e.g. TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq" aria-describedby="addr-help" required>
         <button type="submit">Check</button>
       </form>
+      <p id="addr-help" class="dim small">Accepted: the deposit address, the tx hash of your deposit, or a NEAR tx hash of the swap.</p>
       <div id="swap" aria-live="polite"></div>
+      <p id="case-status" class="sr" role="status" aria-atomic="true"></p>
     </section>
 
     <section id="mine" class="mine" aria-labelledby="mine-h">
@@ -139,7 +148,7 @@
       <div><h2 class="plain">Partners, last hour</h2><div class="scroll"><table id="partners"></table></div>
         <p class="dim small">ALERT: at least 50 swaps and at least 50% refunded. Partner = the app that sent the swap (1Click referral).</p></div>
       <div><h2 class="plain">Busiest routes</h2><div class="scroll"><table id="routes"></table></div></div>
-      <div><h2 class="plain">Status</h2><table id="status"></table><h2 class="plain mt">Refund reasons</h2><table id="reasons"></table></div>
+      <div><h2 class="plain">Status</h2><table id="status"></table><h2 class="plain mt">Refund reasons</h2><table id="reasons"></table><h2 class="plain mt">People ask about (24 h)</h2><table id="asks"></table></div>
     </div>
   </section>
 
@@ -151,12 +160,25 @@
     <div id="incident-view" class="hidden">
       <h2 class="plain">Incident <span id="incident-name" class="note small"></span></h2>
       <p id="incident-stats" class="dim small" role="status" aria-atomic="true"></p>
+      <p id="incident-blocks" class="dim small"></p>
+      <p class="dim small" id="incident-swaps-label">Swaps per hour (UTC).</p>
+      <div id="incident-swaps-bars" class="bars" role="img" aria-labelledby="incident-swaps-label"></div>
       <p class="dim small" id="incident-hourly-label">Refunded or failed share, per hour (UTC).</p>
       <div id="incident-bars" class="bars" role="img" aria-labelledby="incident-hourly-label"></div>
+      <h2 class="plain mt">Who should look</h2><div class="scroll"><table id="incident-who"></table></div>
       <div class="cols mt">
         <div><h2 class="plain">Routes</h2><div class="scroll"><table id="incident-routes"></table></div></div>
         <div><h2 class="plain">Evidence: sample swaps</h2><div class="scroll"><table id="incident-evidence"></table></div>
           <p class="dim small">Each NEAR transaction links to nearblocks. Deposit addresses are shortened; senders are never shown.</p></div>
+      </div>
+      <div id="incident-repro" class="hidden">
+        <h2 class="plain mt">Reproduce</h2>
+        <pre id="incident-repro-text" class="repro"></pre>
+      </div>
+      <div class="actions">
+        <button type="button" class="ghost hidden" id="repro-copy">Copy commands</button>
+        <button type="button" class="ghost" id="ev-csv">Download evidence CSV</button>
+        <button type="button" class="ghost" id="ev-json">Download incident JSON</button>
       </div>
       <p class="small"><a href="#" id="incident-close">Close incident</a></p>
     </div>

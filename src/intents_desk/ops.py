@@ -61,7 +61,16 @@ FROM ops.hourly_swap_summary GROUP BY ALL;
 """
 # Public chain tables that may be backed up in full (not 1Click API data).
 CHAIN_TABLES = ("bronze.receipt", "silver.event", "silver.token_diff")
-BACKUP_TABLES = ("ops.run_log", "ops.hourly_swap_summary", *CHAIN_TABLES)
+# Our own data, kept forever: no raw 1Click rows (terms 4.1(e)).
+BACKUP_TABLES = (
+    "ops.run_log",
+    "ops.hourly_swap_summary",
+    "ops.incident",
+    "ops.support_lookup",
+    "app.support_case",
+    "app.tx_block",
+    *CHAIN_TABLES,
+)
 CHAIN_MACRO = """
 CREATE OR REPLACE TEMP MACRO ops_chain(a) AS (
     CASE

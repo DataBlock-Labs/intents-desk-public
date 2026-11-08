@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import auth, incidents, ops, sources, store, telegram
+from . import auth, incidents, ops, sources, store, support, telegram
 
 PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -239,12 +239,48 @@ def swap_view(address: str, fmt: str = "json"):
     return " ".join(f"{k}={v}" for k, v in parts.items() if v not in (None, "", "0"))
 
 
+def case_of(data: dict, ref: str, full: bool = False) -> dict:
+    """Build, save and count the support case of one 1Click status reply.
+    full=True only when the visitor typed the deposit address (see support.view)."""
+    import duckdb
+
+    cur = db()
+    case = support.build(cur, data, ref)
+    try:
+        if support.save(cur, case):
+            support.log_lookup(cur, case)
+    except duckdb.TransactionException:  # the same row written by a parallel request
+        pass
+    return support.view(cur, case, full)
+
+
+def lookup(key: str) -> tuple[int, dict]:
+    """Find a swap by its deposit address, else by a tx or intent hash (Explorer).
+    A swap found by hash gets the reduced view: the visitor never typed its address."""
+    data = swap_view(key)
+    if "status" in data:
+        return 200, data | {"case": case_of(data, store.ref_of(key), full=True)}
+    if not support.HASH.match(key):  # account names, memos: never a tx hash
+        return 404, {"error": "1Click does not know this address."}
+    try:
+        row = sources.search_explorer(key)
+    except sources.ExplorerBusy:
+        return 429, {"error": "Busy: try the hash again in 5 seconds."}
+    except (OSError, KeyError, ValueError, RuntimeError):  # no Explorer key, or down
+        row = None
+    found = swap_view(row["depositAddress"]) if row else {}
+    if "status" not in found:
+        return 404, {"error": "1Click does not know this address or hash."}
+    ref = store.ref_of(row["depositAddress"])
+    return 200, public_view(found) | {"case": case_of(found, ref), "by_hash": True}
+
+
 def public_view(data: dict) -> dict:
     """The parts of a 1Click status that are safe to show for a swap opened by ref:
     no deposit, recipient or refund address, and no memo."""
-    req = data.get("quoteResponse", {}).get("quoteRequest", {})
-    q = data.get("quoteResponse", {}).get("quote", {})
-    d = data.get("swapDetails", {})
+    req = (data.get("quoteResponse") or {}).get("quoteRequest") or {}
+    q = (data.get("quoteResponse") or {}).get("quote") or {}
+    d = data.get("swapDetails") or {}
     keep = lambda src, keys: {k: src[k] for k in keys if k in src}
     return {
         "status": data.get("status"),
@@ -564,6 +600,22 @@ def stale_once() -> int:
     return int(stale)
 
 
+def watch_once() -> int:
+    """Every 5 min: the stale-sync alert, and one alert per reason whose support
+    lookups jump in an hour (often before the 50-swap incident rule fires)."""
+    stale = stale_once()
+    chat = None
+    for reason, n in support.spikes(db()):
+        key = (datetime.now(UTC).strftime("%Y-%m-%dT%H"), reason)
+        if key in _status.setdefault("spikes_sent", set()):
+            continue
+        chat = chat or incidents.owner_chat(db())
+        if chat is not None:
+            telegram.send(chat, f"Intents Desk: {n} support lookups for {reason} this hour.")  # fmt: skip
+            _status["spikes_sent"].add(key)  # shortcut: in memory, a restart may resend
+    return stale
+
+
 def feed_once() -> int:
     cur = db()
     with ops.audited(cur, PRODUCT, "feed") as run:
@@ -766,6 +818,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"error": "Incident not found."})
             else:
                 self.send_json(200, inc)
+        elif path == "/api/asks":
+            self.send_json(200, {"asks": support.asks(db())})
         elif path == "/api/hourly":
             self.send_json(200, store.hourly_refunds(db(), 24))
         elif path == "/api/feed":
@@ -778,32 +832,29 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/api/swap", "/api/quote"):
             address = q.get("address", [""])[0].strip()
             ref = q.get("ref", [""])[0]
-            if path == "/api/swap" and ref and REF.match(ref):  # from the public list
+            if path == "/api/swap" and ref and REF.match(ref):  # list or case link
                 address = store.address_for_ref(db(), ref) or ""
-                if not address:
+                data = swap_view(address) if address else {}
+                if "status" in data:  # reduced view: the reply never holds an address
                     self.send_json(
-                        404, {"error": "Swap not found (kept for 24 hours)."}
+                        200, public_view(data) | {"case": case_of(data, ref)}
                     )
-                else:  # reduced view: the reply never contains any address
-                    data = swap_view(address)
-                    if (
-                        "status" not in data
-                    ):  # 1Click's not-found text holds the address
-                        self.send_json(
-                            404, {"error": "1Click does not know this swap."}
-                        )
-                    else:
-                        self.send_json(200, public_view(data))
+                elif old := support.saved(db(), ref):  # 1Click data gone: our copy
+                    self.send_json(200, {"case": support.view(db(), old, full=False), "saved": True})  # fmt: skip
+                else:  # 1Click's not-found text holds the address: never echo it
+                    self.send_json(404, {"error": "1Click does not know this swap."})
                 return
             if not ADDRESS.match(address):
-                self.send_json(400, {"error": "Not a valid deposit address."})
+                self.send_json(
+                    400, {"error": "Not a valid deposit address or tx hash."}
+                )
             elif path == "/api/quote":
                 self.send_json(*swap_again(q))
             elif q.get("format", [""])[0] == "agent":
                 line = swap_view(address, "agent").encode()
                 self.send(200, line, "text/plain; charset=utf-8")
             else:
-                self.send_json(200, swap_view(address))
+                self.send_json(*lookup(address))
         elif path == "/api/auth/challenge":
             self.send_json(200, auth.new_challenge())
         elif path == "/api/me":
@@ -925,7 +976,7 @@ def serve(
         ).start()
         if telegram.enabled():
             threading.Thread(
-                target=_loop, args=("stale", stale_once, 300), daemon=True
+                target=_loop, args=("stale", watch_once, 300), daemon=True
             ).start()
     threading.Thread(
         target=_loop, args=("feed", feed_once, FEED_SECONDS), daemon=True

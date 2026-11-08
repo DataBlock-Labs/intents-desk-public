@@ -214,6 +214,30 @@ keeping them.
 - **Always on:** `make service` installs a systemd user service (`Restart=always`) that runs
   `scripts/serve-live` with the env files in `~/.config/intents-desk/`.
 
+## Support cases and engineer reports
+
+- **Where's my swap?** accepts a deposit address, the tx hash of the deposit, or a NEAR tx hash.
+  A hash is looked up with the Explorer API `search` (one search every 5 s per server).
+- **Case file:** it shows the answer in one sentence, why it happened (each refund reason
+  has a plain explanation), the next step, and the incident that the swap is part of.
+  It also shows a timeline and every transaction with its chain, NEAR block height and
+  explorer link.
+- **Share it:** **Copy link** (`/#case=<ref>`), **Copy support message** (paste it into a
+  support chat) and **Download .md**. None of them include a recipient or refund address.
+- **Storage:** the case is saved in `app.support_case` in our own database (the Hetzner server,
+  backed up daily). It keeps only public chain data and the facts of the case, so a case link
+  still works after 1Click's 24 h. Block heights are cached in `app.tx_block`.
+- **Support data:** `ops.support_lookup` counts lookups per hour by status, reason and route,
+  with no address. **People ask about (24 h)** shows them under Network health. When one
+  reason gets 10 lookups in an hour, the owner gets one Telegram message.
+- **Engineer report:** every incident (page, `reports/incidents/`, vault note) lists:
+  - the NEAR block range;
+  - who should look (wallet or widget team, solvers, 1Click);
+  - sample swaps with the NEAR tx, block, origin tx and intent hash;
+  - two charts (swaps per hour, bad % per hour);
+  - a **Reproduce** block with the curl commands that fetch the same data again.
+  The page also offers the evidence as CSV and the incident as JSON.
+
 ## Swaps, recovery and fees
 
 - **New swap** (after wallet sign-in): NEAR ↔ USDC on NEAR, paid to your own account, with

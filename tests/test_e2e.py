@@ -6,6 +6,7 @@ ed25519 key and signs the real NEP-413 message with WebCrypto, so the full sign-
 (page -> challenge -> signature -> server check -> session) runs with no real wallet.
 """
 
+import json
 import os
 import re
 import socket
@@ -13,10 +14,12 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import expect, sync_playwright
 
+from intents_desk import support
 from tests import fakes
 
 pytestmark = pytest.mark.e2e
@@ -180,11 +183,36 @@ def test_swap_lookup_and_quote_preview(app, page):
     page.click("#lookup button[type=submit]")
     expect(page.locator("#swap")).to_contain_text("REFUNDED")
     expect(page.locator("#swap")).to_contain_text("QUOTE_EXPIRED")
+    # the support case: answer, why, timeline and chain references
+    expect(page.locator("#swap")).to_contain_text("Your funds came back: 15006.128946")
+    expect(page.locator("#swap")).to_contain_text(support.REASONS["QUOTE_EXPIRED"][0])
+    expect(page.locator("#swap")).to_contain_text(f"{fakes.NEAR_BLOCK:,}")
+    tron = page.locator("#swap a", has_text="tronscan.org")
+    expect(tron).to_have_attribute("rel", "noopener noreferrer")
+    expect(page.get_by_role("button", name="Copy support message")).to_be_visible()
+    with page.expect_download() as dl:
+        page.get_by_role("button", name="Download .md").click()
+    text = Path(dl.value.path()).read_text()
+    assert "NEAR Intents swap: support case" in text and fakes.TRON_TX in text
+    assert "0xabc" not in text and "TRefund" not in text  # no recipient or refund
+    assert re.search(r"#case=[0-9a-f]{20}$", page.url)
+    case_url = page.url
     page.get_by_role("button", name="Preview a new quote").click()
     expect(page.locator("#swap")).to_contain_text("14945.25293")
     page.fill("#addr", "bad&addr")
     page.click("#lookup button[type=submit]")
     expect(page.locator("#swap")).to_contain_text("Not a valid deposit address")
+    # by the hash of the deposit tx: the same case, but no quote (no address shown)
+    page.fill("#addr", fakes.TRON_TX)
+    page.click("#lookup button[type=submit]")
+    expect(page.locator("#swap")).to_contain_text("Your funds came back")
+    expect(page.get_by_role("button", name="Preview a new quote")).to_have_count(0)
+    assert fakes.REFUNDED not in page.locator("#swap").inner_text()
+    # a case link opens the case on a fresh page, and the lookups are counted
+    page.goto("about:blank")
+    page.goto(case_url)
+    expect(page.locator("#swap")).to_contain_text("Your funds came back")
+    expect(page.locator("#asks")).to_contain_text("QUOTE_EXPIRED")
 
 
 def test_wallet_sign_in_watch_and_sign_out_with_test_wallet(app, page):
@@ -408,6 +436,13 @@ def test_past_incidents_list_and_detail(incident_app):
         expect(page.locator("#incident-stats")).to_contain_text("200 swaps")
         expect(page.locator("#incident-stats")).to_contain_text("20 failed")
         expect(page.locator("#incident-routes")).to_contain_text("arb → base")
+        expect(page.locator("#incident-who")).to_contain_text("Solvers")
+        expect(page.locator("#incident-repro-text")).to_contain_text(
+            "referral=old-widget%3Apda"
+        )
+        with page.expect_download() as dl:
+            page.click("#ev-json")
+        assert json.loads(Path(dl.value.path()).read_text())["swaps"] == 200
         page.click("#incident-close")
         expect(page.locator("#incident-view")).to_be_hidden()
         assert errors == []
