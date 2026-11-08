@@ -8,6 +8,7 @@ Two background threads keep the data fresh, so visitors never call a rate-limite
 import base64
 import gzip
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from . import (
     activity,
+    alerts,
     auth,
     incidents,
     ops,
@@ -56,6 +58,7 @@ RATE_PER_MIN = int(
     os.environ.get("RATE_PER_MIN", "30")
 )  # per client IP, RATE_LIMITED routes
 RATE_LIMITED = (
+    "/api/agent/",
     "/api/swap",
     "/api/quote",
     "/api/me",
@@ -789,6 +792,48 @@ def offer_reply(con, chat: int, ticket: dict, post_id: str) -> None:
         pass
 
 
+ALERT_RULE_SECONDS = 600
+
+
+def alert_rules_once() -> int:
+    """Check custom alert rules; deliver each start and end to its targets."""
+    cur = db()
+    owner = os.environ.get("OWNER_ACCOUNT", "datablock.near")
+    with ops.audited(cur, PRODUCT, "alert_rules") as run:
+        sent = 0
+        for t in alerts.check(cur):
+            try:
+                chat = telegram.linked_chat(cur, t["account"])
+                if "telegram" in t["targets"] and chat is not None:
+                    telegram.send(chat, alerts.render(t))
+                    sent += 1
+                if t["account"] != owner:  # channel and X: the owner's rules only
+                    continue
+                if "channel" in t["targets"]:
+                    telegram.channel_post(alerts.render(t, public=True), "alert")
+                if "x" in t["targets"] and not t["resolved"] and chat is not None:
+                    xpost.offer(cur, chat, "incident", alerts.x_text(t), f"https://{alerts._host()}/")  # fmt: skip
+            except (telegram.TelegramError, ValueError, OSError, RuntimeError) as exc:
+                print(
+                    f"[alert_rules] rule {t['id']}: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+        run["rows"] = sent
+    return sent
+
+
+def agent_account(header: str) -> str | None:
+    """The owner account when the bearer token matches AGENT_TOKEN_SHA256, else None."""
+    want = os.environ.get("AGENT_TOKEN_SHA256", "")
+    token = (
+        header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
+    )
+    if not (want and token):
+        return None
+    got = hashlib.sha256(token.encode()).hexdigest()
+    return os.environ.get("OWNER_ACCOUNT", "datablock.near") if hmac.compare_digest(got, want) else None  # fmt: skip
+
+
 TICKET_SECONDS = 600
 
 
@@ -1073,7 +1118,10 @@ class Handler(BaseHTTPRequestHandler):
         size = (
             int(length) if length.isascii() and length.isdigit() else -1
         )  # "-1" or "abc" are refused
-        if origin not in (f"http://{host}", f"https://{host}"):
+        agent = (
+            urlparse(self.path).path == "/api/agent/alerts"
+        )  # bearer token, no cookie
+        if not agent and origin not in (f"http://{host}", f"https://{host}"):
             self.send_json(403, {"error": "Cross-site request refused."})
             return
         if not self.headers.get("Content-Type", "").startswith("application/json"):
@@ -1129,6 +1177,20 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/auth/logout":
             cookie = "session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
             self.send_json(200, {"ok": True}, Set_Cookie=cookie)
+        elif path == "/api/agent/alerts":  # the owner's IronClaw agent
+            account = agent_account(self.headers.get("Authorization", ""))
+            if not account:
+                self.send_json(401, {"error": "Missing or wrong agent token."})
+                return
+            try:
+                cmd = alerts.parse(str(body.get("text", "")), owner=True)
+                reply = alerts.run(db(), account, cmd)
+            except alerts.RuleError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
+            self.send_json(
+                200, {"reply": reply, "rules": alerts.listing(db(), account)}
+            )
         elif path == "/api/ticket":  # "Report publicly" on a case
             key = str(body.get("key", "")).strip()
             if len(key) > 128 or not tickets.KEY.fullmatch(key):
@@ -1210,6 +1272,11 @@ def serve(
         ).start()
         threading.Thread(
             target=_loop, args=("tickets", tickets_once, TICKET_SECONDS), daemon=True
+        ).start()
+        threading.Thread(
+            target=_loop,
+            args=("alert_rules", alert_rules_once, ALERT_RULE_SECONDS),
+            daemon=True,
         ).start()
         threading.Thread(
             target=_loop, args=("alerts", alerts_once, ALERT_SECONDS), daemon=True
