@@ -35,9 +35,17 @@ const shortHash = (h) => h.length > 20 ? `${h.slice(0, 10)}…${h.slice(-6)}` : 
 const FINAL = ["SUCCESS", "REFUNDED", "FAILED"];
 
 // ---------- Swap lookup ----------
+const NEAR_ACCOUNT = /^(?=.{2,64}$)([a-z0-9]+[-_])*[a-z0-9]+(\.([a-z0-9]+[-_])*[a-z0-9]+)*\.(near|tg)$/;
 $("lookup").addEventListener("submit", async (e) => {
   e.preventDefault();
-  checkAddress($("addr").value.trim());
+  const v = $("addr").value.trim();
+  if (NEAR_ACCOUNT.test(v.toLowerCase())) {  // a wallet: list its activity, swaps included
+    const out = $("swap"); out.replaceChildren(el("h3", `Wallet activity: ${v.toLowerCase()}`));
+    const box = el("div", null, "small"); out.append(box);
+    loadActivity(box, new Set(), "/api/activity?account=" + encodeURIComponent(v.toLowerCase()), false);
+    return;
+  }
+  checkAddress(v);
 });
 // One case on screen: every new check gets a number, and an older reply is dropped.
 let caseTimer, caseSeq = 0;
@@ -335,11 +343,15 @@ function showAccount(account) {
 
 async function loadMine() {
   const [ok, d] = await getJSON("/api/me");
-  if (!ok || !d.account) { showAccount(null); return; }
+  if (!ok || !d.account) { showAccount(null); $("my-activity").replaceChildren(); return; }
   showAccount(d.account);
   const out = $("mine-out"); out.replaceChildren();
   const dl = el("dl"); dl.append(el("dt", "Account"), el("dd", d.account), el("dt", "Balance"), el("dd", `${d.balance_near} NEAR`)); out.append(dl);
   out.append(telegramRow(d.telegram));
+  out.append(el("p", "Your wallet activity is listed under Where's my swap?.", "dim small"));
+  const mineBox = $("my-activity"); mineBox.replaceChildren(el("h3", `Your wallet activity: ${d.account}`));
+  const act = el("div", null, "small"); mineBox.append(act);
+  loadActivity(act, new Set(d.watched.map((w) => w.address)));
   out.append(swapForm(d));
   out.append(el("h2", "Watched swaps"));
   if (!d.watched.length) out.append(el("p", "None yet. Check a swap, then press Watch.", "dim small"));
@@ -463,13 +475,66 @@ function swapForm(d) {
   return box;
 }
 
+// Every recent transaction of the signed-in account, in words. 1Click deposits show their status.
+const ACTIVITY_PAGE = 5;
+const when = (iso) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const amt = (x) => String(+Number(x).toPrecision(6));  // 1.018060634439575… -> 1.01806
+// Every recent transaction of an account, newest first, 5 per page. Same columns, status
+// names and address buttons as Recent swaps; 1Click swaps carry their route and amounts.
+async function loadActivity(box, watched, url = "/api/me/activity", mine = true) {
+  box.replaceChildren(el("p", "Reading recent transactions from the NEAR chain…", "dim"));
+  const [ok, d] = await getJSON(url);
+  box.replaceChildren();
+  if (!ok) { box.append(el("p", d.error || "Chain history is not available right now.", "dim")); return; }
+  if (!d.activity.length) { box.append(el("p", "No transactions yet for this account.", "dim")); return; }
+  const t = el("table"), wrap = el("div", null, "scroll"); wrap.append(t);
+  const prev = el("button", "Newer", "ghost"), next = el("button", "Older", "ghost"), info = el("span", "", "dim small");
+  prev.type = next.type = "button";
+  const nav = el("p", null, "small"); nav.append(prev, " ", next, " ", info);
+  box.append(wrap, nav);
+  const pages = Math.ceil(d.activity.length / ACTIVITY_PAGE);
+  let page = 0;
+  const show = () => {
+    const rows = d.activity.slice(page * ACTIVITY_PAGE, (page + 1) * ACTIVITY_PAGE);
+    table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["What"], ["Deposit address"], ["Tx"]],
+      rows.map((a) => [when(a.when), a.status, a.route || "–", usd(a.in_usd), a, a, a.tx]),
+      (td, v, i) => {
+        if (i === 1) statusCell(td, v);
+        else if (i === 2) { td.textContent = v; td.style.whiteSpace = "nowrap"; }
+        else if (i === 4) {
+          td.textContent = v.text + (v.amount_in && v.amount_out ? ` (${amt(v.amount_in)} → ${amt(v.amount_out)})` : "") + (v.reason ? ` · ${v.reason}` : "");
+          const done = ["SUCCESS", "REFUNDED", "FAILED"].includes(v.swap_status);
+          if (mine && v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
+        } else if (i === 5) {
+          if (!v.swap_status) { td.textContent = "–"; return; }
+          const btn = el("button", v.deposit.slice(0, 10) + "…", "addr"); btn.type = "button"; btn.title = "Check this swap";
+          btn.setAttribute("aria-label", "Check swap " + v.deposit.slice(0, 10));
+          btn.addEventListener("click", () => { $("lookup-h").scrollIntoView(); checkAddress(v.deposit); });
+          td.append(btn);
+        } else if (i === 6) {
+          const a = el("a", v.slice(0, 8) + "…"); a.href = `https://nearblocks.io/txns/${v}`; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a);
+        } else td.textContent = v;
+      });
+    prev.disabled = page === 0; next.disabled = page >= pages - 1;
+    info.textContent = `Page ${page + 1} of ${pages} · ${d.activity.length} events`;
+  };
+  prev.addEventListener("click", () => { page = Math.max(0, page - 1); show(); });
+  next.addEventListener("click", () => { page = Math.min(pages - 1, page + 1); show(); });
+  show();
+}
+
 function telegramRow(tg) {
   const p = el("p", null, "small");
   if (!tg?.available) { p.append(el("span", "Telegram alerts are not set up on this server.", "dim")); return p; }
   if (tg.linked) {
     const b = el("button", "Disconnect", "ghost"); b.type = "button";
     b.addEventListener("click", async () => { await post("/api/me/telegram/unlink", {}); loadMine(); });
-    p.append("Telegram alerts: on. You get a message when a watched swap changes. ", b);
+    const auto = el("button", tg.auto_watch ? "Turn off auto-watch" : "Turn on auto-watch", "ghost"); auto.type = "button";
+    auto.addEventListener("click", async () => { await post("/api/me/telegram/autowatch", { on: !tg.auto_watch }); loadMine(); });
+    p.append("Telegram alerts: on. You get a message when a watched swap changes. ");
+    p.append(tg.auto_watch ? "New swaps from this wallet are watched automatically. " : "Auto-watch is off: press Watch on a swap. ");
+    if (tg.bot) { const a = el("a", "Open the bot"); a.href = tg.bot; a.target = "_blank"; a.rel = "noopener noreferrer"; p.append(a, " "); }
+    p.append(auto, " ", b);
     return p;
   }
   const b = el("button", "Connect Telegram"); b.type = "button";
@@ -479,7 +544,8 @@ function telegramRow(tg) {
     const a = el("a", "Open Telegram and press Start"); a.href = r.link; a.target = "_blank"; a.rel = "noopener noreferrer";
     p.replaceChildren(a, el("span", " (link works once, for 10 minutes; then reload this page)", "dim"));
   });
-  p.append("Get a Telegram message when a watched swap changes. ", b);
+  p.append("Get a Telegram message when a swap from this wallet changes. New swaps are watched automatically. ", b);
+  if (tg.bot) { const a = el("a", "About the bot"); a.href = tg.bot; a.target = "_blank"; a.rel = "noopener noreferrer"; p.append(" ", a); }
   return p;
 }
 

@@ -91,8 +91,8 @@
   .mine { min-height: 160px; }
   .hidden { display: none; }
   .filters { display: flex; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
-  .filters label { width: auto; display: flex; gap: var(--s2); align-items: center; }
-  select { min-height: var(--tap); padding: var(--s1) var(--s2); border: 1px solid var(--rule-2); background: var(--bg-2); color: var(--fg); font: 13px var(--mono); }
+  .filters label { width: auto; display: flex; gap: var(--s2); align-items: center; max-width: 100%; min-width: 0; }
+  select { min-height: var(--tap); padding: var(--s1) var(--s2); border: 1px solid var(--rule-2); background: var(--bg-2); color: var(--fg); font: 13px var(--mono); max-width: 100%; min-width: 0; }
   button.addr { min-height: 32px; padding: 0 var(--s2); background: transparent; color: var(--fg); border-color: var(--rule-2); font-weight: 500; }
   .swaps-wrap { min-height: 420px; }
   footer { max-width: 1200px; margin: 0 auto; padding: var(--s5) var(--s4) var(--s6); color: var(--fg-2); font-size: 12px; }
@@ -121,19 +121,20 @@
     <section aria-labelledby="lookup-h">
       <h2 id="lookup-h">Where's my swap?</h2>
       <form id="lookup">
-        <label for="addr">Deposit address or transaction hash of your NEAR Intents (1Click) swap</label>
+        <label for="addr">Deposit address, transaction hash, or NEAR account (e.g. alice.near)</label>
         <input id="addr" name="address" autocomplete="off" spellcheck="false" placeholder="e.g. TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq" aria-describedby="addr-help" required>
         <button type="submit">Check</button>
       </form>
-      <p id="addr-help" class="dim small">Accepted: the deposit address, the tx hash of your deposit, or a NEAR tx hash of the swap.</p>
+      <p id="addr-help" class="dim small">Accepted: the deposit address, the tx hash of your deposit, a NEAR tx hash of the swap, or a NEAR account name to list its recent wallet activity (swaps, wraps, transfers).</p>
       <div id="swap" aria-live="polite"></div>
+      <div id="my-activity"></div>
       <p id="case-status" class="sr" role="status" aria-atomic="true"></p>
     </section>
 
     <section id="mine" class="mine" aria-labelledby="mine-h">
-      <h2 id="mine-h">My swaps</h2>
+      <h2 id="mine-h">My wallet</h2>
       <div id="mine-out">
-        <p class="dim">Connect your NEAR wallet to see your swaps and watch them. Signing in signs a message only: no transaction, no fee. This site never asks for your keys.</p>
+        <p class="dim">Connect your NEAR wallet to see all your recent activity (wraps, swaps, 1Click deposits) and get Telegram alerts without pasting anything. Signing in signs a message only: no transaction, no fee. This site never asks for your keys.</p>
       </div>
     </section>
   </div>
