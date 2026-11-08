@@ -49,8 +49,6 @@ make serve    # then open http://localhost:8420
 |---|---|---|
 | ![Swap lookup](docs/images/swap-lookup.png) | ![Wallet picker](docs/images/wallet-picker.png) | ![Phone](docs/images/mobile.png) |
 
-![Community feed](docs/images/feed.png)
-
 ### Keys (all optional)
 
 | Variable | What it unlocks |

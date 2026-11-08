@@ -113,7 +113,7 @@ def test_server_uses_db_flag_syncs_and_serves_every_panel(fake, tmp_path):
         partners = get(f"{app}/api/partners")
         assert db.exists()  # the --db flag is honoured
         alert = {p[0]: p[-1] for p in partners}
-        assert alert["widget-x:pda"] is True and alert["partner-b"] is False
+        assert alert["widget-x:pda"] is True and alert["partner-good"] is False
         assert get(f"{app}/api/summary")["swaps"] == 120
         line = get(f"{app}/api/swap?address={fakes.REFUNDED}&format=agent").decode()
         assert line.startswith("status=REFUNDED route=tron→eth")

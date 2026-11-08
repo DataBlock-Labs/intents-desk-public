@@ -424,7 +424,7 @@ def seed_incidents(con):
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     rows = []
     for h in range(-80, 0):
-        rows.append((now + timedelta(hours=h), "partner-b", "SUCCESS", 1000, None))
+        rows.append((now + timedelta(hours=h), "partner-good", "SUCCESS", 1000, None))
     for h in (-72, -71):
         rows.append(
             (

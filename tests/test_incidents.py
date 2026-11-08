@@ -32,7 +32,7 @@ def add(con, hour, partner, status, n, reason=None, route=("arb", "base")):
 def healthy(con, hours):
     """A big healthy partner in every hour, so the network rule stays quiet."""
     for h in hours:
-        add(con, h, "partner-b", "SUCCESS", 1000)
+        add(con, h, "partner-good", "SUCCESS", 1000)
 
 
 def bad(con, h, partner="widget-y:pda", refunded=40, failed=20, ok=0):
@@ -96,7 +96,7 @@ def test_network_rule_lists_top_partners(con):
     healthy(con, range(4))
     for p in ("p1", "p2", "p3"):
         add(con, 0, p, "REFUNDED", 49, "QUOTE_EXPIRED")  # each too small on its own
-    add(con, 0, "partner-b", "REFUNDED", 30, "QUOTE_EXPIRED")
+    add(con, 0, "partner-good", "REFUNDED", 30, "QUOTE_EXPIRED")
     [inc] = incidents.find(con)
     assert inc["scope"] == "network" and inc["bad_pct"] > 10
     assert [p for p, _n in inc["partners"]] == ["p1", "p2", "p3"]
