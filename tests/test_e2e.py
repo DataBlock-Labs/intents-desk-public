@@ -331,6 +331,26 @@ def test_account_lookup_lists_activity_five_per_page(app, page):
     expect(page.locator("#swap .answer")).to_contain_text("REFUNDED")
 
 
+def test_report_publicly_opens_a_ticket_in_the_panel(app, page):
+    url, faked = app
+    if not faked:
+        pytest.skip("needs the fake 1Click swap")
+    open_page(page, url)
+    page.fill("#addr", fakes.NEAR_REFUNDED)
+    page.click("#lookup button[type=submit]")
+    expect(page.locator("#swap .answer")).to_contain_text("REFUNDED")
+    page.get_by_role("button", name="Report publicly").click()
+    expect(page.locator("#swap")).to_contain_text(
+        re.compile("Ticket opened|Already a ticket")
+    )
+    panel = page.locator("#tickets")
+    expect(panel).to_contain_text("REFUNDED")
+    expect(panel).to_contain_text("QUOTE_EXPIRED")
+    assert fakes.NEAR_REFUNDED not in panel.inner_text()
+    panel.get_by_role("button", name=re.compile("Open ticket")).first.click()
+    expect(page.locator("#swap .answer")).to_contain_text("REFUNDED")
+
+
 def test_page_shows_data_when_the_wallet_library_never_loads(app, page):
     url, faked = app
     page.route("**/static/near-connect.js", lambda r: r.abort())  # blocked or slow CDN

@@ -115,6 +115,16 @@ function renderCase(c, saved, typed) {
   const actions = el("div", null, "actions");
   actions.append(copyButton("Copy link", () => `${location.origin}${location.pathname}#case=${c.ref}`),
     copyButton("Copy support message", msg));
+  if (typed) {  // the visitor has the key: they may open a public ticket for it
+    const rep = el("button", "Report publicly", "ghost"); rep.type = "button";
+    rep.title = "Open a public ticket: status and reason only, never the address";
+    rep.addEventListener("click", async () => {
+      rep.disabled = true; const [ok, r] = await post("/api/ticket", { key: typed });
+      rep.textContent = ok ? (r.new ? "Ticket opened" : "Already a ticket") : (r.error || "Could not open a ticket");
+      if (ok) loadTickets();
+    });
+    actions.append(rep);
+  }
   const dl2 = el("button", "Download .md", "ghost"); dl2.type = "button";
   dl2.addEventListener("click", () => download(`swap-case-${c.ref}.md`, msg(), "text/markdown"));
   actions.append(dl2); box.append(actions);
@@ -476,6 +486,25 @@ function swapForm(d) {
 }
 
 // Every recent transaction of the signed-in account, in words. 1Click deposits show their status.
+// ---------- Public tickets ----------
+async function loadTickets() {
+  const [ok, d] = await getJSON("/api/tickets");
+  if (!ok) { $("tickets-note").textContent = "unavailable"; return; }
+  $("tickets-note").textContent = d.tickets.length ? `${d.tickets.length} newest` : "none yet";
+  table($("tickets"), [["Ticket"], ["Status"], ["Reason"], ["Route"], ["Source"], ["Opened"], ["Checked"]],
+    d.tickets.map((t) => [t, t.status || "–", t.reason || "", t.route || "–", t, ago(t.opened_at), ago(t.updated_at)]),
+    (td, v, i) => {
+      if (i === 0) { const b = el("button", v.ref.slice(0, 8), "addr"); b.type = "button"; b.title = "Open this ticket";
+        b.setAttribute("aria-label", "Open ticket " + v.ref.slice(0, 8));
+        b.addEventListener("click", () => lookupRef(v.ref, v.ref.slice(0, 8))); td.append(b); }
+      else if (i === 1) statusCell(td, v);
+      else if (i === 4) {
+        if (v.source_url) { const a = el("a", v.source, "small"); a.href = v.source_url; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a); }
+        else td.textContent = v.source;
+      } else td.textContent = v;
+    });
+}
+
 const ACTIVITY_PAGE = 5;
 const when = (iso) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const amt = (x) => String(+Number(x).toPrecision(6));  // 1.018060634439575… -> 1.01806
@@ -601,10 +630,12 @@ loadFeed();
 loadMine();
 loadSwaps();
 loadIncidents();
+loadTickets();
 loadAsks();
 const whenVisible = (fn) => () => { if (!document.hidden) fn(); };  // no polling in a background tab
 setInterval(whenVisible(loadHealth), 60000);
 setInterval(whenVisible(loadSwaps), 60000);
+setInterval(whenVisible(loadTickets), 60000);
 setInterval(whenVisible(loadIncidents), 300000);
 setInterval(whenVisible(loadAsks), 300000);
 document.addEventListener("visibilitychange", whenVisible(() => { loadHealth(); loadSwaps(); }));

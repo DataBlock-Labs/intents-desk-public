@@ -16,6 +16,7 @@ class FakeTelegram:
 
     def __init__(self):
         self.sent, self.updates, self.fail = [], [], False
+        self.buttons = []  # reply_markup of each sendMessage (None when plain)
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -33,9 +34,12 @@ class FakeTelegram:
                     "getMe": {"username": "IntentsDeskTestBot"},
                     "sendMessage": {"message_id": 1},
                     "getUpdates": fake.updates,
+                    "answerCallbackQuery": True,
+                    "setMyCommands": True,
                 }[method]
                 if method == "sendMessage":
                     fake.sent.append((body["chat_id"], body["text"]))
+                    fake.buttons.append(body.get("reply_markup"))
                 if method == "getUpdates":
                     fake.updates = []
                 data = json.dumps({"ok": True, "result": result}).encode()
