@@ -16,10 +16,11 @@ cd "$WORK/repo"
 # The same input gives the same commits, so the public repo only gets new commits added.
 uvx git-filter-repo --force --quiet \
 	--invert-paths --paths-from-file "$RULES/drop.txt" \
-	--strip-blobs-with-ids "$RULES/strip-blobs.txt" \
+	--strip-blobs-with-ids "$RULES/strip-blobs.txt" --mailmap "$RULES/mailmap" \
 	--replace-text "$RULES/replace.txt" --replace-message "$RULES/replace.txt"
 
-if git log -p --all --format='%H %an %s%n%b' | grep -inE -f "$RULES/deny.txt"; then
+# Every object: file contents (binary too), commit authors and messages, and tags.
+if git cat-file --batch-all-objects --batch | grep -aoiE -f "$RULES/deny.txt" | sort | uniq -c; then
 	echo "publish-public: a denied word is still in the history (above). Nothing pushed." >&2
 	exit 1
 fi
