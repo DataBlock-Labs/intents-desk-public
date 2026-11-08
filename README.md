@@ -6,6 +6,8 @@ swaps. A NEAR × DataBlock product, built at NEAR HACKATHON (Nov 1–14, 2026).
 
 ![Intents Desk dashboard](docs/images/dashboard.png)
 
+**Watch the 2-minute explainer:** [docs/explainer.md](docs/explainer.md).
+
 ## The problem
 
 NEAR Intents moves about $50M a day through its 1Click swap API. When a swap is stuck or
