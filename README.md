@@ -27,7 +27,7 @@ hour.
 **Local:** needs Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-make test     # 60+ unit tests on recorded data; no keys needed
+make test     # 220+ tests on recorded data; no keys needed (about 3 minutes)
 make serve    # then open http://localhost:8420
 ```
 
