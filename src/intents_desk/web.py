@@ -27,6 +27,10 @@ from . import activity, auth, incidents, ops, sources, store, support, telegram
 
 PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+# A named NEAR account (alice.near, bob.tg): the lookup lists its wallet activity.
+NEAR_ACCOUNT = re.compile(
+    r"^(?=.{2,64}$)([a-z0-9]+[-_])*[a-z0-9]+(\.([a-z0-9]+[-_])*[a-z0-9]+)*\.(near|tg)$"
+)
 PARTNER = re.compile(r"^(\(none\)|[A-Za-z0-9._:-]{1,80})$")
 ROUTE = re.compile(r"^[a-z0-9-]{1,20} → [a-z0-9-]{1,20}$")
 REF = re.compile(r"^[0-9a-f]{20}$")
@@ -38,7 +42,7 @@ STALE_MINUTES = 30  # no good sync for this long: tell the owner
 SYNC_HOURS = 2  # re-read this much before the newest stored swap (statuses change)
 MAX_SYNC_HOURS = 24  # first run, or after a long downtime
 RATE_PER_MIN = 30  # per client IP, for the routes in RATE_LIMITED
-RATE_LIMITED = ("/api/swap", "/api/quote", "/api/me", "/api/auth/")
+RATE_LIMITED = ("/api/swap", "/api/quote", "/api/me", "/api/auth/", "/api/activity")
 FEED_SECONDS = 3600
 REVENUE_SECONDS = 300
 BACKUP_SECONDS = 24 * 3600
@@ -505,13 +509,16 @@ def account_activity(account: str, fresh: bool = False) -> list[dict]:
     hit = _activity.get(account)
     if hit and not fresh and time.time() - hit[0] < ACTIVITY_SECONDS:
         return hit[1]
-    lines = [activity.describe(t, account) for t in sources.get_account_txs(account)]
-    for line in [x for x in lines if x["deposit"]][:5]:  # at most 5 status calls
+    txs = sources.get_account_txs(account, limit=30)
+    lines = [activity.describe(t, account) for t in txs]
+    for line in [x for x in lines if x["deposit"]][:10]:  # at most 10 status calls
         status = sources.get_swap_status(line["deposit"], retries=1).get("status")
         line["swap_status"] = status  # None: not a 1Click deposit address
         if status:
             line["kind"] = "swap"
             line["text"] = line["text"].replace("deposit address", "1Click swap")
+    if len(_activity) > 500:  # public lookups: keep the cache small
+        _activity.clear()
     _activity[account] = (time.time(), lines)
     return lines
 
@@ -930,21 +937,32 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(*lookup(address))
         elif path == "/api/auth/challenge":
             self.send_json(200, auth.new_challenge())
+        elif path == "/api/activity":
+            account = q.get("account", [""])[0].strip().lower()
+            if not NEAR_ACCOUNT.match(account):
+                self.send_json(400, {"error": "Not a NEAR account name (for example alice.near)."})  # fmt: skip
+            else:
+                self.activity_reply(account)
         elif path == "/api/me/activity":
             account = self.account()
             if not account:
                 self.send_json(401, {"error": "Not signed in."})
             else:
-                try:
-                    self.send_json(200, {"activity": account_activity(account)})
-                except (OSError, RuntimeError, ValueError, KeyError):
-                    self.send_json(502, {"error": "Chain history is not available right now."})  # fmt: skip
+                self.activity_reply(account)
         elif path == "/api/me":
             account = self.account()
             # Signed out is a normal state, not an error: 200 with account null.
             self.send_json(200, account_view(account) if account else {"account": None})
         else:
             self.send_json(404, {"error": "Not found."})
+
+    def activity_reply(self, account: str) -> None:
+        try:
+            self.send_json(
+                200, {"account": account, "activity": account_activity(account)}
+            )
+        except (OSError, RuntimeError, ValueError, KeyError):
+            self.send_json(502, {"error": "Chain history is not available right now."})
 
     def do_POST(self) -> None:
         if self.limited(urlparse(self.path).path):

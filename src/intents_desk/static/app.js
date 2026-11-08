@@ -35,9 +35,17 @@ const shortHash = (h) => h.length > 20 ? `${h.slice(0, 10)}…${h.slice(-6)}` : 
 const FINAL = ["SUCCESS", "REFUNDED", "FAILED"];
 
 // ---------- Swap lookup ----------
+const NEAR_ACCOUNT = /^(?=.{2,64}$)([a-z0-9]+[-_])*[a-z0-9]+(\.([a-z0-9]+[-_])*[a-z0-9]+)*\.(near|tg)$/;
 $("lookup").addEventListener("submit", async (e) => {
   e.preventDefault();
-  checkAddress($("addr").value.trim());
+  const v = $("addr").value.trim();
+  if (NEAR_ACCOUNT.test(v.toLowerCase())) {  // a wallet: list its activity, swaps included
+    const out = $("swap"); out.replaceChildren(el("h3", `Wallet activity: ${v.toLowerCase()}`));
+    const box = el("div", null, "small"); out.append(box);
+    loadActivity(box, new Set(), "/api/activity?account=" + encodeURIComponent(v.toLowerCase()), false);
+    return;
+  }
+  checkAddress(v);
 });
 // One case on screen: every new check gets a number, and an older reply is dropped.
 let caseTimer, caseSeq = 0;
@@ -335,13 +343,14 @@ function showAccount(account) {
 
 async function loadMine() {
   const [ok, d] = await getJSON("/api/me");
-  if (!ok || !d.account) { showAccount(null); return; }
+  if (!ok || !d.account) { showAccount(null); $("my-activity").replaceChildren(); return; }
   showAccount(d.account);
   const out = $("mine-out"); out.replaceChildren();
   const dl = el("dl"); dl.append(el("dt", "Account"), el("dd", d.account), el("dt", "Balance"), el("dd", `${d.balance_near} NEAR`)); out.append(dl);
   out.append(telegramRow(d.telegram));
-  out.append(el("h2", "Wallet activity (NEAR chain, newest first)"));
-  const act = el("div", null, "small"); act.append(el("p", "Reading your recent transactions…", "dim")); out.append(act);
+  out.append(el("p", "Your wallet activity is listed under Where's my swap?.", "dim small"));
+  const mineBox = $("my-activity"); mineBox.replaceChildren(el("h3", `Your wallet activity: ${d.account}`));
+  const act = el("div", null, "small"); mineBox.append(act);
   loadActivity(act, new Set(d.watched.map((w) => w.address)));
   out.append(swapForm(d));
   out.append(el("h2", "Watched swaps"));
@@ -467,8 +476,9 @@ function swapForm(d) {
 }
 
 // Every recent transaction of the signed-in account, in words. 1Click deposits show their status.
-async function loadActivity(box, watched) {
-  const [ok, d] = await getJSON("/api/me/activity");
+async function loadActivity(box, watched, url = "/api/me/activity", mine = true) {
+  box.replaceChildren(el("p", "Reading recent transactions from the NEAR chain…", "dim"));
+  const [ok, d] = await getJSON(url);
   box.replaceChildren();
   if (!ok) { box.append(el("p", d.error || "Chain history is not available right now.", "dim")); return; }
   if (!d.activity.length) { box.append(el("p", "No transactions yet for this account.", "dim")); return; }
@@ -476,8 +486,13 @@ async function loadActivity(box, watched) {
   table(t, [["When"], ["What"], ["Status"], ["Tx"]], d.activity.map((a) => [new Date(a.when).toLocaleString(), a, a.swap_status || (a.ok ? "Done" : "Failed"), a.tx]), (td, v, i) => {
     if (i === 1) {
       td.textContent = v.text;
+      if (v.swap_status) {  // a 1Click swap: open its case file
+        const open = el("button", "Open swap", "ghost"); open.type = "button";
+        open.addEventListener("click", () => { $("lookup-h").scrollIntoView(); checkAddress(v.deposit); });
+        td.append(" ", open);
+      }
       const done = ["SUCCESS", "REFUNDED", "FAILED"].includes(v.swap_status);
-      if (v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
+      if (mine && v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
     } else if (i === 2) statusCell(td, v);
     else if (i === 3) { const a = el("a", v.slice(0, 8) + "…"); a.href = `https://nearblocks.io/txns/${v}`; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a); }
     else td.textContent = v;

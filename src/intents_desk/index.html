@@ -121,12 +121,13 @@
     <section aria-labelledby="lookup-h">
       <h2 id="lookup-h">Where's my swap?</h2>
       <form id="lookup">
-        <label for="addr">Deposit address or transaction hash of your NEAR Intents (1Click) swap</label>
+        <label for="addr">Deposit address, transaction hash, or NEAR account (e.g. alice.near)</label>
         <input id="addr" name="address" autocomplete="off" spellcheck="false" placeholder="e.g. TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq" aria-describedby="addr-help" required>
         <button type="submit">Check</button>
       </form>
-      <p id="addr-help" class="dim small">Accepted: the deposit address, the tx hash of your deposit, or a NEAR tx hash of the swap.</p>
+      <p id="addr-help" class="dim small">Accepted: the deposit address, the tx hash of your deposit, a NEAR tx hash of the swap, or a NEAR account name to list its recent wallet activity (swaps, wraps, transfers).</p>
       <div id="swap" aria-live="polite"></div>
+      <div id="my-activity"></div>
       <p id="case-status" class="sr" role="status" aria-atomic="true"></p>
     </section>
 

@@ -137,3 +137,13 @@ def test_failed_relayed_tx_is_not_ours():
     it["is_success"] = False
     line = activity.describe(it, ME)
     assert line["deposit"] is None and "relayer" in line["text"]
+
+
+def test_public_account_lookup_lists_activity(txapi):
+    code, d = get(
+        txapi, "/api/activity?account=Alice.near", account=None
+    )  # case folded
+    assert code == 200 and d["account"] == "alice.near"
+    assert any(a.get("swap_status") == "REFUNDED" for a in d["activity"])
+    for bad in ("alice", "0xabc.near.", "a" * 64, "alice.near;drop"):
+        assert get(txapi, f"/api/activity?account={bad}", account=None)[0] == 400
