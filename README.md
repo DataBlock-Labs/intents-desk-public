@@ -212,6 +212,22 @@ keeping them.
   - Only a press from the owner's chat counts. Each draft is single use and expires after 24 h.
   - Posting runs `xurl --auth oauth1` and needs `X_POST=1` on the server; the keys stay in `~/.xurl`. Nothing is posted without a press.
 
+## Custom alerts
+
+- **Rules:** "tell me when …", checked every 10 minutes. Each one sends one message when it starts and one when it ends.
+  - **Kinds:** a route's refund share (`route tron eth 20`), all swaps (`network 10`), refunds with one reason per hour (`reason QUOTE_EXPIRED 30`), a partner's incidents (`partner <id or alias>`), one large refund (`refund 5000`, owner only), or one swap (`swap <deposit address>`).
+  - A route or network hour with fewer than 20 swaps never fires.
+- **Telegram:** `/alert <rule>`, `/alert list` and `/alert off <n>`, from a linked chat. Users get their own alerts only, with at most 10 rules each.
+- **Owner extras:** owner rules may add `+channel` (the public channel, aliases only) and `+x` (an X draft with Post/Skip buttons).
+- **IronClaw:** the skill `agent/intents-desk-alerts/SKILL.md` turns a plain request into the same rule text and sends it to `POST /api/agent/alerts`.
+  - The call carries `Authorization: Bearer <token>`. The server keeps only `AGENT_TOKEN_SHA256`.
+  - The agent box sets `INTENTS_DESK_URL` and `INTENTS_DESK_TOKEN`.
+- **Every alert has 4 lines, built from data:**
+  1. what happened;
+  2. how big;
+  3. "Act": what users and which team should do;
+  4. "Open": the link, plus how to stop the alert.
+
 ## Incident log
 
 - **Rule:** an incident opens when a partner has at least 50 swaps in an hour and at least

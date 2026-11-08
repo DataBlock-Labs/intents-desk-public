@@ -20,10 +20,11 @@ from . import sources
 CODE_MINUTES = 10
 MAX_CHECKS_PER_RUN = 100
 # Public channel posts per hour, per kind: ticket spam cannot crowd out incident posts.
-CHANNEL_PER_HOUR = {"ticket": 15, "incident": 10}
+CHANNEL_PER_HOUR = {"ticket": 15, "incident": 10, "alert": 10}
 _channel_sent: dict[str, list[float]] = {}  # shortcut: in memory, one server process
 COMMANDS = [
     ("report", "Report a swap: /report <deposit address or tx hash>"),
+    ("alert", "Custom alerts: /alert route tron eth 20, /alert list"),
     ("status", "Your watched swaps"),
     ("stop", "Unlink this chat"),
     ("help", "What this bot does"),
@@ -33,6 +34,7 @@ HELP = (
     "/report <deposit address or tx hash>: check a NEAR Intents (1Click) swap and open a"
     " public ticket for it. The ticket shows status and reason, never your address.\n"
     "/status: your watched swaps (after you link this chat on Intents Desk).\n"
+    "/alert: custom alerts on routes, reasons, partners or one swap. Send /alert help.\n"
     "/stop: unlink this chat."
 )
 
@@ -156,6 +158,9 @@ def handle_update(con, update: dict) -> None:
     if command == "/report":
         report_command(con, chat_id, arg.strip())
         return
+    if command == "/alert":
+        alert_command(con, chat_id, arg.strip())
+        return
     if command == "/start" and not arg.strip():
         send(chat_id, HELP)
         return
@@ -238,6 +243,27 @@ def report_command(con, chat_id: int, key: str) -> None:
             pass
     if ticket["new"]:
         channel_post(tickets.channel_text(ticket))
+
+
+def alert_command(con, chat_id: int, text: str) -> None:
+    """/alert …: add, list or stop custom alerts for the linked account."""
+    from . import alerts, incidents
+    from .web import allow
+
+    if not allow(f"tg:{chat_id}"):
+        send(chat_id, "Too many requests. Wait a minute.")
+        return
+    account = con.execute(
+        "SELECT account_id FROM app.telegram WHERE chat_id = ?", [chat_id]
+    ).fetchone()
+    if not account:
+        send(chat_id, "Link this chat first: sign in on Intents Desk and press Connect Telegram.")  # fmt: skip
+        return
+    try:
+        cmd = alerts.parse(text, owner=chat_id == incidents.owner_chat(con))
+        send(chat_id, alerts.run(con, account[0], cmd))
+    except alerts.RuleError as exc:
+        send(chat_id, str(exc))
 
 
 def handle_button(con, query: dict) -> None:
