@@ -597,6 +597,13 @@ def write_files(inc: dict) -> list[str]:
     return paths
 
 
+def channel_text(inc: dict) -> str:
+    """The public channel post: always the alias. The incident link holds the partner
+    as the page shows it, so it is added only when the page masks names too."""
+    tail = f"\n{link(inc)}" if os.environ.get("MASK_PARTNERS") == "1" else ""
+    return post_text(inc, masked=True) + tail
+
+
 def link(inc: dict) -> str:
     host = os.environ.get("PUBLIC_HOST", "localhost:8420")
     return f"https://{host}/#incident={quote(public(inc)['id'])}"
@@ -661,7 +668,7 @@ def publish(con, ids: list[str] | None = None, send_drafts: bool = True) -> dict
             skipped = "owner Telegram chat not linked"
             continue
         if send_drafts:
-            telegram.channel_post(post_text(inc, masked=True) + "\n" + link(inc), "incident")  # fmt: skip
+            telegram.channel_post(channel_text(inc), "incident")
             try:  # the owner approves each X post with a button
                 xpost.offer(con, chat, "incident", post_text(inc), link(inc))
             except ValueError:  # over 280 characters: the plain draft to copy

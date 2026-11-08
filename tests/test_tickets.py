@@ -196,3 +196,18 @@ def test_channel_incident_text_always_uses_the_alias(monkeypatch):
     inc = {"scope": "partner", "referral": "evil.example/phish:pda"}
     assert incidents.label(inc) == "evil.example/phish:pda"  # the owner's own views
     assert incidents.label(inc, masked=True).startswith("partner-")
+
+
+def test_channel_incident_link_only_when_names_are_masked(monkeypatch):
+    from intents_desk import incidents
+
+    inc = {"scope": "partner", "referral": "evil.example:pda", "started_at": "2026-11-04T13:00Z"}  # fmt: skip
+    monkeypatch.setattr(incidents, "post_text", lambda i, masked=False: "body")
+    monkeypatch.setattr(
+        incidents, "public", lambda i: {"id": f"{incidents.label(i)}@x"}
+    )
+    monkeypatch.delenv("MASK_PARTNERS", raising=False)
+    assert incidents.channel_text(inc) == "body"  # no link: it would carry the raw id
+    monkeypatch.setenv("MASK_PARTNERS", "1")
+    text = incidents.channel_text(inc)
+    assert "#incident=partner-" in text and "evil" not in text
