@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 # Every base URL can be overridden by env (tests point them at fake servers).
 NEARDATA = os.environ.get("NEARDATA_URL", "https://mainnet.neardata.xyz/v0")
 RPC = os.environ.get("NEAR_RPC_URL", "https://rpc.mainnet.near.org")
+# FastNEAR's public transactions API: the only free source that lists one account's txs.
+TXAPI = os.environ.get("TXAPI_URL", "https://tx.main.fastnear.com/v0")
 ONECLICK = os.environ.get("ONECLICK_URL", "https://1click.chaindefuser.com/v0")
 EXPLORER = os.environ.get(  # needs INTENTS_EXPLORER_JWT
     "EXPLORER_URL", "https://explorer.near-intents.org/api/v0"
@@ -289,6 +291,25 @@ def get_access_key(account: str, public_key: str) -> dict | None:
             "public_key": public_key,
         }
     )
+
+
+def get_account_txs(account: str, limit: int = 15) -> list[dict]:
+    """Get the account's newest transactions (public chain data), newest first.
+
+    Each item is FastNEAR's transaction record: `transaction` (signer, receiver, actions)
+    and `execution_outcome` (block time), plus `is_success` from the account index.
+    """
+    index = get_json(
+        f"{TXAPI}/account", {"account_id": account, "limit": limit}, retries=2
+    ).get("account_txs", [])[:limit]
+    ok = {t["transaction_hash"]: t.get("is_success", True) for t in index}
+    if not ok:
+        return []
+    found = get_json(f"{TXAPI}/transactions", {"tx_hashes": list(ok)}, retries=2)
+    txs = [t for t in found.get("transactions", []) if t and "transaction" in t]
+    for t in txs:
+        t["is_success"] = ok.get(t["transaction"]["hash"], True)
+    return sorted(txs, key=lambda t: -int(t["execution_outcome"]["block_timestamp"]))
 
 
 def get_account(account: str) -> dict | None:

@@ -67,6 +67,20 @@ def new_link(con, account: str) -> str:
     return f"https://t.me/{bot}?start={code}"
 
 
+def bot_url() -> str | None:
+    """Link to the bot, from TELEGRAM_BOT_USERNAME (no API call)."""
+    name = os.environ.get("TELEGRAM_BOT_USERNAME")
+    return f"https://t.me/{name}" if name and enabled() else None
+
+
+def auto_watch(con, account: str) -> bool:
+    row = con.execute(
+        "SELECT coalesce(auto_watch, true) FROM app.telegram WHERE account_id = ?",
+        [account],
+    ).fetchone()
+    return bool(row and row[0])
+
+
 def linked_chat(con, account: str) -> int | None:
     row = con.execute(
         "SELECT chat_id FROM app.telegram WHERE account_id = ?", [account]

@@ -36,8 +36,9 @@ make serve    # then open http://localhost:8420
    REFUNDED, Tron → Ethereum, 15,006 USDT refunded, reason `QUOTE_EXPIRED`, what to do next, and
    a **Swap again** quote preview.
 3. Press **Connect wallet** and pick any NEAR wallet. Your wallet signs a message (NEP-413): no
-   transaction, no fee. You see your NEAR balance, swaps sent or refunded to your account, and
-   you can watch a swap.
+   transaction, no fee. You see your NEAR balance and **Wallet activity**: your recent
+   transactions in plain words ("Wrapped 1 NEAR into wNEAR", "Sent 1.018 NEAR to 1Click swap
+   308a38c6… SUCCESS"), with a NEARBlocks link for each. Nothing to paste.
 4. Scroll to **What people report**: recent X and r/nearprotocol posts about stuck swaps,
    refunds and support, filterable.
 5. For agents: `curl "localhost:8420/api/swap?address=TTxfvD7a6bxixfxXdAKJqEqFZpUKtun3dq&format=agent"`
@@ -114,8 +115,8 @@ flowchart LR
 ```
 
 - **Sources.** Public NEAR data only: the Intents Explorer (every 1Click swap with its status),
-  the 1Click API (one swap's status trail and quotes), NEAR RPC (accounts and access keys), and
-  community posts.
+  the 1Click API (one swap's status trail and quotes), NEAR RPC (accounts and access keys),
+  FastNEAR's transactions API (one signed-in account's recent transactions), and community posts.
 - **Storage.** One DuckDB file in three layers. Bronze keeps every raw response, so a parser fix
   never needs a re-fetch. Silver holds one row per swap; a swap's status changes after it is
   first seen, so rows are replaced by key, never appended. Gold holds the aggregates the page and
@@ -190,7 +191,10 @@ keeping them.
   deposit address to look the swap up.
 - **Telegram alerts** (after wallet sign-in): press Connect Telegram, open the one-time link
   (10 minutes, single use) and press Start. The bot sends one message when a watched swap
-  changes status (at most 20 watched swaps per account). In Telegram: `/status` lists your
+  changes status (at most 20 watched swaps per account). **Auto-watch** (on by default once
+  linked; one button turns it off): every 5 minutes the server reads each linked account's
+  transactions, watches every new 1Click swap from the last 24 h, and sends one message with its
+  status, so you never press Watch. In Telegram: `/status` lists your
   watched swaps, `/stop` unlinks. To enable on a server, create a bot with @BotFather and set
   `TELEGRAM_BOT_TOKEN` (`make serve` reads `~/.config/intents-desk/telegram.env`).
 

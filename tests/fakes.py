@@ -135,6 +135,24 @@ USDC_NEAR = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e361
 PRICES = {"nep141:wrap.near": 3.73e-24, USDC_NEAR: 1e-6}
 
 
+def _tx(h, signer, receiver, actions, minutes_ago):
+    ns = int((datetime.now(UTC).timestamp() - 60 * minutes_ago) * 1e9)
+    tx = {"hash": h, "signer_id": signer, "receiver_id": receiver, "actions": actions}
+    return {"transaction": tx, "execution_outcome": {"block_timestamp": ns}}
+
+
+def account_txs() -> dict[str, dict]:
+    """alice.near: a 1Click NEAR deposit (refunded swap), a wrap, a storage deposit."""
+    return {
+        "TxDeposit1": _tx("TxDeposit1", "alice.near", NEAR_REFUNDED,
+                          [{"Transfer": {"deposit": str(2 * 10**24)}}], 30),
+        "TxWrap1": _tx("TxWrap1", "alice.near", "wrap.near", [{"FunctionCall": {
+            "method_name": "near_deposit", "args": "e30=", "deposit": str(10**24)}}], 20),
+        "TxStorage1": _tx("TxStorage1", "alice.near", "wrap.near", [{"FunctionCall": {
+            "method_name": "storage_deposit", "args": "e30=", "deposit": "1250000000000000000000"}}], 21),
+    }  # fmt: skip
+
+
 class Fake:
     def __init__(self, rate_limit_every: int = 0):
         self.rate_limit_every = rate_limit_every
@@ -219,6 +237,17 @@ class Fake:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 p = urlparse(self.path).path
+                if p == "/txapi/account":
+                    txs = (
+                        account_txs() if body.get("account_id") == "alice.near" else {}
+                    )
+                    rows = [{"transaction_hash": h, "is_success": True} for h in txs]
+                    self.reply(200, {"account_txs": rows})
+                    return
+                if p == "/txapi/transactions":
+                    txs = account_txs()
+                    self.reply(200, {"transactions": [txs[h] for h in body["tx_hashes"] if h in txs]})  # fmt: skip
+                    return
                 if p == "/oneclick/quote":
                     QUOTES.append(body)  # tests read what we sent to 1Click
                     live = {"depositAddress": f"dep{len(QUOTES):05d}xxxx"}
@@ -283,6 +312,7 @@ def env(base: str) -> dict[str, str]:
         "EXPLORER_URL": f"{base}/explorer",
         "ONECLICK_URL": f"{base}/oneclick",
         "NEAR_RPC_URL": f"{base}/rpc",
+        "TXAPI_URL": f"{base}/txapi",
         "X_SEARCH_URL": f"{base}/x/search",
         "REDDIT_URL": f"{base}/reddit",
         "INTENTS_EXPLORER_JWT": "fake-explorer-key",

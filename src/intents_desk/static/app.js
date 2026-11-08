@@ -340,6 +340,9 @@ async function loadMine() {
   const out = $("mine-out"); out.replaceChildren();
   const dl = el("dl"); dl.append(el("dt", "Account"), el("dd", d.account), el("dt", "Balance"), el("dd", `${d.balance_near} NEAR`)); out.append(dl);
   out.append(telegramRow(d.telegram));
+  out.append(el("h2", "Wallet activity (NEAR chain, newest first)"));
+  const act = el("div", null, "small"); act.append(el("p", "Reading your recent transactions…", "dim")); out.append(act);
+  loadActivity(act, new Set(d.watched.map((w) => w.address)));
   out.append(swapForm(d));
   out.append(el("h2", "Watched swaps"));
   if (!d.watched.length) out.append(el("p", "None yet. Check a swap, then press Watch.", "dim small"));
@@ -463,13 +466,36 @@ function swapForm(d) {
   return box;
 }
 
+// Every recent transaction of the signed-in account, in words. 1Click deposits show their status.
+async function loadActivity(box, watched) {
+  const [ok, d] = await getJSON("/api/me/activity");
+  box.replaceChildren();
+  if (!ok) { box.append(el("p", d.error || "Chain history is not available right now.", "dim")); return; }
+  if (!d.activity.length) { box.append(el("p", "No transactions yet for this account.", "dim")); return; }
+  const t = el("table"), wrap = el("div", null, "scroll"); wrap.append(t); box.append(wrap);
+  table(t, [["When"], ["What"], ["Status"], ["Tx"]], d.activity.map((a) => [new Date(a.when).toLocaleString(), a, a.swap_status || (a.ok ? "Done" : "Failed"), a.tx]), (td, v, i) => {
+    if (i === 1) {
+      td.textContent = v.text;
+      const done = ["SUCCESS", "REFUNDED", "FAILED"].includes(v.swap_status);
+      if (v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
+    } else if (i === 2) statusCell(td, v);
+    else if (i === 3) { const a = el("a", v.slice(0, 8) + "…"); a.href = `https://nearblocks.io/txns/${v}`; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a); }
+    else td.textContent = v;
+  });
+}
+
 function telegramRow(tg) {
   const p = el("p", null, "small");
   if (!tg?.available) { p.append(el("span", "Telegram alerts are not set up on this server.", "dim")); return p; }
   if (tg.linked) {
     const b = el("button", "Disconnect", "ghost"); b.type = "button";
     b.addEventListener("click", async () => { await post("/api/me/telegram/unlink", {}); loadMine(); });
-    p.append("Telegram alerts: on. You get a message when a watched swap changes. ", b);
+    const auto = el("button", tg.auto_watch ? "Turn off auto-watch" : "Turn on auto-watch", "ghost"); auto.type = "button";
+    auto.addEventListener("click", async () => { await post("/api/me/telegram/autowatch", { on: !tg.auto_watch }); loadMine(); });
+    p.append("Telegram alerts: on. You get a message when a watched swap changes. ");
+    p.append(tg.auto_watch ? "New swaps from this wallet are watched automatically. " : "Auto-watch is off: press Watch on a swap. ");
+    if (tg.bot) { const a = el("a", "Open the bot"); a.href = tg.bot; a.target = "_blank"; a.rel = "noopener noreferrer"; p.append(a, " "); }
+    p.append(auto, " ", b);
     return p;
   }
   const b = el("button", "Connect Telegram"); b.type = "button";
@@ -479,7 +505,8 @@ function telegramRow(tg) {
     const a = el("a", "Open Telegram and press Start"); a.href = r.link; a.target = "_blank"; a.rel = "noopener noreferrer";
     p.replaceChildren(a, el("span", " (link works once, for 10 minutes; then reload this page)", "dim"));
   });
-  p.append("Get a Telegram message when a watched swap changes. ", b);
+  p.append("Get a Telegram message when a swap from this wallet changes. New swaps are watched automatically. ", b);
+  if (tg.bot) { const a = el("a", "About the bot"); a.href = tg.bot; a.target = "_blank"; a.rel = "noopener noreferrer"; p.append(" ", a); }
   return p;
 }
 

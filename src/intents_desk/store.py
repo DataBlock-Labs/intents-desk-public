@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS app.telegram (
     chat_id BIGINT NOT NULL,
     linked_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE app.telegram ADD COLUMN IF NOT EXISTS auto_watch BOOLEAN DEFAULT true;
 CREATE TABLE IF NOT EXISTS app.quote (
     deposit_address TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,

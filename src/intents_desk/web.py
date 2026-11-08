@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import auth, incidents, ops, sources, store, support, telegram
+from . import activity, auth, incidents, ops, sources, store, support, telegram
 
 PRODUCT = "intents-desk"
 ADDRESS = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -493,6 +493,61 @@ def revenue_once() -> int:
     return n
 
 
+ACTIVITY_SECONDS = 60
+AUTOWATCH_SECONDS = 300
+_activity: dict[
+    str, tuple[float, list]
+] = {}  # shortcut: per-process cache; fine for one server
+
+
+def account_activity(account: str, fresh: bool = False) -> list[dict]:
+    """The account's newest transactions in plain words; deposits get their 1Click status."""
+    hit = _activity.get(account)
+    if hit and not fresh and time.time() - hit[0] < ACTIVITY_SECONDS:
+        return hit[1]
+    lines = [activity.describe(t, account) for t in sources.get_account_txs(account)]
+    for line in [x for x in lines if x["deposit"]][:5]:  # at most 5 status calls
+        status = sources.get_swap_status(line["deposit"], retries=1).get("status")
+        line["swap_status"] = status  # None: not a 1Click deposit address
+        if status:
+            line["kind"] = "swap"
+            line["text"] = line["text"].replace("deposit address", "1Click swap")
+    _activity[account] = (time.time(), lines)
+    return lines
+
+
+def autowatch_once() -> int:
+    """Watch new 1Click swaps of Telegram-linked accounts, and say so once.
+
+    Only swaps from the last 24 h are added. The message carries the status at the time,
+    because a fast swap can finish before the alert loop first checks it.
+    """
+    cur, added = db(), 0
+    accounts = cur.execute(
+        "SELECT account_id, chat_id FROM app.telegram WHERE coalesce(auto_watch, true)"
+    ).fetchall()
+    day_ago = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+    for account, chat in accounts:
+        watched = set(store.watch_list(cur, account))
+        for line in account_activity(account, fresh=True):
+            address, status = line["deposit"], line.get("swap_status")
+            if not status or address in watched or line["when"] < day_ago:
+                continue
+            try:
+                store.set_watch(cur, account, address, True)
+            except ValueError:  # at the watch limit
+                break
+            cur.execute(
+                "UPDATE app.watch SET last_status = ? WHERE account_id = ? AND deposit_address = ?",
+                [status, account, address],
+            )
+            done = status in ("SUCCESS", "REFUNDED", "FAILED")
+            tail = "It is finished." if done else "Watching it for you."
+            telegram.send(chat, f"New swap from {account}: {line['text']}. Status: {status}. {tail}")  # fmt: skip
+            added += 1
+    return added
+
+
 def account_view(account: str) -> dict:
     """Get the signed-in user's balance, stored swaps and watched swaps."""
     cur = db()
@@ -506,6 +561,8 @@ def account_view(account: str) -> dict:
         "telegram": {
             "available": telegram.enabled(),
             "linked": telegram.linked_chat(cur, account) is not None,
+            "auto_watch": telegram.auto_watch(cur, account),
+            "bot": telegram.bot_url(),
         },
         "balance_near": round(yocto / 10**24, 4),
         "swap_live": os.environ.get("SWAP_LIVE") == "1",
@@ -857,6 +914,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(*lookup(address))
         elif path == "/api/auth/challenge":
             self.send_json(200, auth.new_challenge())
+        elif path == "/api/me/activity":
+            account = self.account()
+            if not account:
+                self.send_json(401, {"error": "Not signed in."})
+            else:
+                try:
+                    self.send_json(200, {"activity": account_activity(account)})
+                except (OSError, RuntimeError, ValueError, KeyError):
+                    self.send_json(502, {"error": "Chain history is not available right now."})  # fmt: skip
         elif path == "/api/me":
             account = self.account()
             # Signed out is a normal state, not an error: 200 with account null.
@@ -929,6 +995,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/auth/logout":
             cookie = "session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0"
             self.send_json(200, {"ok": True}, Set_Cookie=cookie)
+        elif path == "/api/me/telegram/autowatch":
+            account = self.account()
+            if not account:
+                self.send_json(401, {"error": "Not signed in."})
+            else:
+                on = bool(body.get("on"))
+                db().execute("UPDATE app.telegram SET auto_watch = ? WHERE account_id = ?", [on, account])  # fmt: skip
+                self.send_json(200, {"auto_watch": on})
         elif path in ("/api/me/telegram", "/api/me/telegram/unlink"):
             account = self.account()
             if not account:
@@ -983,6 +1057,11 @@ def serve(
     ).start()
     if telegram.enabled():
         threading.Thread(target=_bot_loop, daemon=True).start()
+        threading.Thread(
+            target=_loop,
+            args=("autowatch", autowatch_once, AUTOWATCH_SECONDS),
+            daemon=True,
+        ).start()
         threading.Thread(
             target=_loop, args=("alerts", alerts_once, ALERT_SECONDS), daemon=True
         ).start()
