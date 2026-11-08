@@ -33,10 +33,10 @@ def test_partner_detail_reads_daily_history_from_aggregates(con):
     con.execute(
         "INSERT INTO ops.hourly_swap_summary (hour, partner, origin_chain, destination_chain,"
         " status, swaps, usd_in, refunded_usd) VALUES"
-        " ('2026-11-01 10:00+00', 'partner-b', 'eth', 'sol', 'SUCCESS', 9, 900, NULL),"
-        " ('2026-11-01 11:00+00', 'partner-b', 'eth', 'sol', 'REFUNDED', 1, 100, 100)"
+        " ('2026-11-01 10:00+00', 'partner-good', 'eth', 'sol', 'SUCCESS', 9, 900, NULL),"
+        " ('2026-11-01 11:00+00', 'partner-good', 'eth', 'sol', 'REFUNDED', 1, 100, 100)"
     )
-    daily = partner_detail(con, "partner-b")["daily"]
+    daily = partner_detail(con, "partner-good")["daily"]
     assert daily == [("2026-11-01", 10, 10.0, 100.0)]
 
 
@@ -49,8 +49,8 @@ def test_recent_swaps_filters(con):
     assert len(recent_swaps(con, limit=200)) == 121
     refunded = recent_swaps(con, status="REFUNDED", limit=200)
     assert refunded and {s["status"] for s in refunded} == {"REFUNDED"}
-    kit = recent_swaps(con, partner="partner-b", limit=5)
-    assert len(kit) == 5 and {s["partner"] for s in kit} == {"partner-b"}
+    kit = recent_swaps(con, partner="partner-good", limit=5)
+    assert len(kit) == 5 and {s["partner"] for s in kit} == {"partner-good"}
     assert recent_swaps(con, route="tron → eth", limit=3)[0]["route"] == "tron → eth"
     times = [s["created_at"] for s in recent_swaps(con, limit=10)]
     assert times == sorted(times, reverse=True)

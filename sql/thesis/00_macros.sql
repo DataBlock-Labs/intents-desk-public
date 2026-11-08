@@ -8,5 +8,5 @@ CREATE OR REPLACE TEMP MACRO chain(a) AS (
         ELSE 'near'  -- any other token id lives on NEAR
     END
 );
--- Incident partners: wallet-widget referral ids of one partner that end in ':pda'.
+-- Incident partners: one partner's wallet-widget referral ids that end in ':pda'.
 CREATE OR REPLACE TEMP MACRO incident(r) AS (coalesce(r, '') LIKE '%:pda');

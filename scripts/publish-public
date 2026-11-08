@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Publish a copy of main without partner names to the public repo.
+# The rules are in public/ (never published). See AGENTS.md "Public copy".
+# Usage: scripts/publish-public [--dry-run]
+set -euo pipefail
+REPO=$(git rev-parse --show-toplevel)
+RULES="$REPO/public"
+PUBLIC=${PUBLIC_REMOTE:-https://github.com/DataBlock-Labs/intents-desk-public.git}
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+# PUBLISH_SOURCE and PUBLISH_BRANCH are for a dry run of a branch that is not merged yet.
+SOURCE=${PUBLISH_SOURCE:-$(git -C "$REPO" remote get-url origin)}
+git clone -q --no-local --single-branch --branch "${PUBLISH_BRANCH:-main}" "$SOURCE" "$WORK/repo"
+cd "$WORK/repo"
+# The same input gives the same commits, so the public repo only gets new commits added.
+uvx git-filter-repo --force --quiet \
+	--invert-paths --paths-from-file "$RULES/drop.txt" \
+	--strip-blobs-with-ids "$RULES/strip-blobs.txt" --mailmap "$RULES/mailmap" \
+	--replace-text "$RULES/replace.txt" --replace-message "$RULES/replace.txt"
+
+# Every object: file contents (binary too), commit authors and messages, and tags.
+if git cat-file --batch-all-objects --batch | grep -aoiE -f "$RULES/deny.txt" | sort | uniq -c; then
+	echo "publish-public: a denied word is still in the history (above). Nothing pushed." >&2
+	exit 1
+fi
+scripts/security-scan
+uv run --quiet pytest -q -m "not e2e" -p no:cacheprovider
+
+echo "publish-public: $(git rev-list --count HEAD) commits, head $(git rev-parse --short HEAD)"
+if [ "${1:-}" = "--dry-run" ]; then
+	echo "publish-public: dry run, nothing pushed."
+	exit 0
+fi
+# No --force: if the rules changed, the old public history no longer matches and this stops.
+git push "$PUBLIC" HEAD:main

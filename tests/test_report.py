@@ -24,7 +24,7 @@ def swap(i, status, referral, hour=14, usd="100"):
 def fixture_db(tmp_path):
     con = connect(tmp_path / "t.duckdb")
     txs = [swap(i, "REFUNDED", "widget-y:pda", hour=15) for i in range(20)]
-    txs += [swap(100 + i, "SUCCESS", "partner-b", hour=14) for i in range(30)]
+    txs += [swap(100 + i, "SUCCESS", "partner-good", hour=14) for i in range(30)]
     load_explorer_txs(con, txs)
     save_fill(con, "addr0100", "2026-11-04T14:00:00Z", "2026-11-04T14:02:04Z")
     save_fill(con, "addr0101", "2026-11-04T14:01:00Z", "2026-11-04T14:20:00Z")

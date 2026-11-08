@@ -4,6 +4,9 @@
 are failing right now, read what users report, and sign in with a NEAR wallet to watch your own
 swaps. A NEAR × DataBlock product, built at NEAR HACKATHON (Nov 1–14, 2026).
 
+**Live:** https://intents.datablock.pro. This public repo is published from our working repo.
+Partner names show as aliases (`partner-…`) until each partner has been told. Issues are welcome.
+
 ![Intents Desk dashboard](docs/images/dashboard.png)
 
 **Watch the 2-minute explainer:** [docs/explainer.md](docs/explainer.md).
@@ -48,8 +51,6 @@ make serve    # then open http://localhost:8420
 | Swap lookup | Wallet sign-in | Phone |
 |---|---|---|
 | ![Swap lookup](docs/images/swap-lookup.png) | ![Wallet picker](docs/images/wallet-picker.png) | ![Phone](docs/images/mobile.png) |
-
-![Community feed](docs/images/feed.png)
 
 ### Keys (all optional)
 

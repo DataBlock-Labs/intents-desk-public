@@ -90,11 +90,11 @@ def test_partner_report_flags_a_failing_partner(tmp_path):
 
     con = connect(tmp_path / "t.duckdb")
     bad = [swap(i, "REFUNDED", "widget:pda") for i in range(60)]
-    good = [swap(100 + i, "SUCCESS", "partner-b") for i in range(60)]
+    good = [swap(100 + i, "SUCCESS", "partner-good") for i in range(60)]
     load_explorer_txs(con, bad + good)
     rows = {r[0]: r for r in partner_report(con, 1, 50, 50).fetchall()}
     assert rows["widget:pda"][2] == 100.0 and rows["widget:pda"][-1] is True
-    assert rows["partner-b"][-1] is False
+    assert rows["partner-good"][-1] is False
     assert rows["widget:pda"][5] == "INTENT_SUBMIT_FAILED"
 
 

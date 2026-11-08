@@ -40,7 +40,7 @@ def explorer_swaps(now: datetime) -> list[dict]:
                 "depositMemo": None,
                 "createdAt": _iso(now - timedelta(seconds=25 * i)),
                 "status": "REFUNDED" if bad else "SUCCESS",
-                "referral": "widget-x:pda" if bad else "partner-b",
+                "referral": "widget-x:pda" if bad else "partner-good",
                 "refundReason": "INTENT_SUBMIT_FAILED" if bad else None,
                 "refundTo": "sender-a" if bad else f"user{i}",
                 "recipient": "test.near" if i == 1 else f"r{i}",
