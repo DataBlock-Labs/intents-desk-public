@@ -477,6 +477,8 @@ function swapForm(d) {
 
 // Every recent transaction of the signed-in account, in words. 1Click deposits show their status.
 const ACTIVITY_PAGE = 5;
+const when = (iso) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const amt = (x) => String(+Number(x).toPrecision(6));  // 1.018060634439575… -> 1.01806
 // Every recent transaction of an account, newest first, 5 per page. Same columns, status
 // names and address buttons as Recent swaps; 1Click swaps carry their route and amounts.
 async function loadActivity(box, watched, url = "/api/me/activity", mine = true) {
@@ -494,21 +496,22 @@ async function loadActivity(box, watched, url = "/api/me/activity", mine = true)
   let page = 0;
   const show = () => {
     const rows = d.activity.slice(page * ACTIVITY_PAGE, (page + 1) * ACTIVITY_PAGE);
-    table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["What"], ["Reason"], ["Deposit address"], ["Tx"]],
-      rows.map((a) => [new Date(a.when).toLocaleString(), a.status, a.route || "–", usd(a.in_usd), a, a.reason || "", a, a.tx]),
+    table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["What"], ["Deposit address"], ["Tx"]],
+      rows.map((a) => [when(a.when), a.status, a.route || "–", usd(a.in_usd), a, a, a.tx]),
       (td, v, i) => {
         if (i === 1) statusCell(td, v);
+        else if (i === 2) { td.textContent = v; td.style.whiteSpace = "nowrap"; }
         else if (i === 4) {
-          td.textContent = v.text + (v.amount_in && v.amount_out ? ` (${v.amount_in} → ${v.amount_out})` : "");
+          td.textContent = v.text + (v.amount_in && v.amount_out ? ` (${amt(v.amount_in)} → ${amt(v.amount_out)})` : "") + (v.reason ? ` · ${v.reason}` : "");
           const done = ["SUCCESS", "REFUNDED", "FAILED"].includes(v.swap_status);
           if (mine && v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
-        } else if (i === 6) {
+        } else if (i === 5) {
           if (!v.swap_status) { td.textContent = "–"; return; }
           const btn = el("button", v.deposit.slice(0, 10) + "…", "addr"); btn.type = "button"; btn.title = "Check this swap";
           btn.setAttribute("aria-label", "Check swap " + v.deposit.slice(0, 10));
           btn.addEventListener("click", () => { $("lookup-h").scrollIntoView(); checkAddress(v.deposit); });
           td.append(btn);
-        } else if (i === 7) {
+        } else if (i === 6) {
           const a = el("a", v.slice(0, 8) + "…"); a.href = `https://nearblocks.io/txns/${v}`; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a);
         } else td.textContent = v;
       });
