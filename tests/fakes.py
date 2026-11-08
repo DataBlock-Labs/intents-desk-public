@@ -150,6 +150,8 @@ def account_txs() -> dict[str, dict]:
             "method_name": "near_deposit", "args": "e30=", "deposit": str(10**24)}}], 20),
         "TxStorage1": _tx("TxStorage1", "alice.near", "wrap.near", [{"FunctionCall": {
             "method_name": "storage_deposit", "args": "e30=", "deposit": "1250000000000000000000"}}], 21),
+        **{f"TxSend{i}": _tx(f"TxSend{i}", "alice.near", "bob.near",
+                             [{"Transfer": {"deposit": str(10**24)}}], 40 + i) for i in range(4)},
     }  # fmt: skip
 
 

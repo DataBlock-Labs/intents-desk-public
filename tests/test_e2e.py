@@ -85,6 +85,7 @@ def run_app(tmp_path_factory, seed=None, **extra):
     env = {
         **os.environ,
         **fakes.env(base),
+        "RATE_PER_MIN": "600",  # one browser drives every test from one IP
         "SESSION_KEY_FILE": str(tmp / "s.key"),
         "PUBLIC_HOST": f"127.0.0.1:{port}",
         "INCIDENT_REPORTS_DIR": str(tmp / "reports"),
@@ -305,6 +306,29 @@ def test_partner_view_and_recent_swaps(app, page):
     page.click("#partner-close")
     expect(page.locator("#partner-view")).to_be_hidden()
     assert page.evaluate("window.__csp || []") == []
+
+
+def test_account_lookup_lists_activity_five_per_page(app, page):
+    url, faked = app
+    if not faked:
+        pytest.skip("needs the fake transactions API")
+    open_page(page, url)
+    page.fill("#addr", "alice.near")
+    page.click("#lookup button[type=submit]")
+    rows = page.locator("#swap table tr")
+    expect(rows).to_have_count(6)  # header + 5 events
+    expect(page.locator("#swap")).to_contain_text("Page 1 of 2 · 7 events")
+    expect(
+        page.locator("#swap td.s-SUCCESS").first
+    ).to_be_visible()  # same status names
+    page.get_by_role("button", name="Older").click()
+    expect(rows).to_have_count(3)  # header + the last 2
+    expect(page.get_by_role("button", name="Older")).to_be_disabled()
+    page.get_by_role("button", name="Newer").click()
+    swap = page.get_by_role("button", name=re.compile("Check swap a1b2c3d4"))
+    expect(page.locator("#swap")).to_contain_text("REFUNDED")
+    swap.click()
+    expect(page.locator("#swap .answer")).to_contain_text("REFUNDED")
 
 
 def test_page_shows_data_when_the_wallet_library_never_loads(app, page):

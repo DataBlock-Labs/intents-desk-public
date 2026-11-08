@@ -41,7 +41,9 @@ INCIDENT_SYNC_SECONDS = 120  # while an incident is open
 STALE_MINUTES = 30  # no good sync for this long: tell the owner
 SYNC_HOURS = 2  # re-read this much before the newest stored swap (statuses change)
 MAX_SYNC_HOURS = 24  # first run, or after a long downtime
-RATE_PER_MIN = 30  # per client IP, for the routes in RATE_LIMITED
+RATE_PER_MIN = int(
+    os.environ.get("RATE_PER_MIN", "30")
+)  # per client IP, RATE_LIMITED routes
 RATE_LIMITED = ("/api/swap", "/api/quote", "/api/me", "/api/auth/", "/api/activity")
 FEED_SECONDS = 3600
 REVENUE_SECONDS = 300
@@ -509,14 +511,34 @@ def account_activity(account: str, fresh: bool = False) -> list[dict]:
     hit = _activity.get(account)
     if hit and not fresh and time.time() - hit[0] < ACTIVITY_SECONDS:
         return hit[1]
-    txs = sources.get_account_txs(account, limit=30)
+    txs = sources.get_account_txs(account, limit=50)
     lines = [activity.describe(t, account) for t in txs]
-    for line in [x for x in lines if x["deposit"]][:10]:  # at most 10 status calls
-        status = sources.get_swap_status(line["deposit"], retries=1).get("status")
+    for line in lines:  # one status name for every row, as in the swap tables
+        line["status"] = "SUCCESS" if line["ok"] else "FAILED"
+        line.update(
+            route=None, in_usd=None, amount_in=None, amount_out=None, reason=None
+        )
+    for line in [x for x in lines if x["deposit"]][:15]:  # at most 15 status calls
+        data = sources.get_swap_status(line["deposit"], retries=1)
+        status = data.get("status")
         line["swap_status"] = status  # None: not a 1Click deposit address
-        if status:
-            line["kind"] = "swap"
-            line["text"] = line["text"].replace("deposit address", "1Click swap")
+        if not status:
+            continue
+        req = (data.get("quoteResponse") or {}).get("quoteRequest") or {}
+        quote_ = (data.get("quoteResponse") or {}).get("quote") or {}
+        details = data.get("swapDetails") or {}
+        line.update(
+            kind="swap",
+            text=line["text"].replace("deposit address", "1Click swap"),
+            status=status,
+            route=f"{chain_of(req.get('originAsset', '?'))} → {chain_of(req.get('destinationAsset', '?'))}",
+            in_usd=details.get("amountInUsd") or quote_.get("amountInUsd"),
+            amount_in=details.get("amountInFormatted")
+            or quote_.get("amountInFormatted"),
+            amount_out=details.get("amountOutFormatted")
+            or details.get("refundedAmountFormatted"),
+            reason=details.get("refundReason"),
+        )
     if len(_activity) > 500:  # public lookups: keep the cache small
         _activity.clear()
     _activity[account] = (time.time(), lines)

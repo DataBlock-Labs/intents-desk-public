@@ -79,7 +79,15 @@ def test_activity_endpoint_lists_and_checks_deposits(txapi):
         texts[0].startswith("Sent 1 NEAR") or "Wrapped 1 NEAR into wNEAR (1:1)" in texts
     )
     swap = next(a for a in d["activity"] if a["deposit"] == fakes.NEAR_REFUNDED)
-    assert swap["kind"] == "swap" and swap["swap_status"] == "REFUNDED"
+    assert (
+        swap["kind"] == "swap" and swap["swap_status"] == swap["status"] == "REFUNDED"
+    )
+    assert swap["route"] == "near → near" and swap["amount_in"] == "2"
+    assert swap["reason"] == "QUOTE_EXPIRED"
+    wrap = next(a for a in d["activity"] if a["kind"] == "wrap")
+    assert (
+        wrap["status"] == "SUCCESS" and wrap["route"] is None
+    )  # same names as the swap tables
     assert swap["text"].startswith("Sent 2 NEAR to 1Click swap")
     assert get(txapi, "/api/me/activity", account=None)[0] == 401
 

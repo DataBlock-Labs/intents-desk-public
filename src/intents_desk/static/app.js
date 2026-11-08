@@ -476,27 +476,48 @@ function swapForm(d) {
 }
 
 // Every recent transaction of the signed-in account, in words. 1Click deposits show their status.
+const ACTIVITY_PAGE = 5;
+// Every recent transaction of an account, newest first, 5 per page. Same columns, status
+// names and address buttons as Recent swaps; 1Click swaps carry their route and amounts.
 async function loadActivity(box, watched, url = "/api/me/activity", mine = true) {
   box.replaceChildren(el("p", "Reading recent transactions from the NEAR chain…", "dim"));
   const [ok, d] = await getJSON(url);
   box.replaceChildren();
   if (!ok) { box.append(el("p", d.error || "Chain history is not available right now.", "dim")); return; }
   if (!d.activity.length) { box.append(el("p", "No transactions yet for this account.", "dim")); return; }
-  const t = el("table"), wrap = el("div", null, "scroll"); wrap.append(t); box.append(wrap);
-  table(t, [["When"], ["What"], ["Status"], ["Tx"]], d.activity.map((a) => [new Date(a.when).toLocaleString(), a, a.swap_status || (a.ok ? "Done" : "Failed"), a.tx]), (td, v, i) => {
-    if (i === 1) {
-      td.textContent = v.text;
-      if (v.swap_status) {  // a 1Click swap: open its case file
-        const open = el("button", "Open swap", "ghost"); open.type = "button";
-        open.addEventListener("click", () => { $("lookup-h").scrollIntoView(); checkAddress(v.deposit); });
-        td.append(" ", open);
-      }
-      const done = ["SUCCESS", "REFUNDED", "FAILED"].includes(v.swap_status);
-      if (mine && v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
-    } else if (i === 2) statusCell(td, v);
-    else if (i === 3) { const a = el("a", v.slice(0, 8) + "…"); a.href = `https://nearblocks.io/txns/${v}`; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a); }
-    else td.textContent = v;
-  });
+  const t = el("table"), wrap = el("div", null, "scroll"); wrap.append(t);
+  const prev = el("button", "Newer", "ghost"), next = el("button", "Older", "ghost"), info = el("span", "", "dim small");
+  prev.type = next.type = "button";
+  const nav = el("p", null, "small"); nav.append(prev, " ", next, " ", info);
+  box.append(wrap, nav);
+  const pages = Math.ceil(d.activity.length / ACTIVITY_PAGE);
+  let page = 0;
+  const show = () => {
+    const rows = d.activity.slice(page * ACTIVITY_PAGE, (page + 1) * ACTIVITY_PAGE);
+    table(t, [["When"], ["Status"], ["Route"], ["In $", 1], ["What"], ["Reason"], ["Deposit address"], ["Tx"]],
+      rows.map((a) => [new Date(a.when).toLocaleString(), a.status, a.route || "–", usd(a.in_usd), a, a.reason || "", a, a.tx]),
+      (td, v, i) => {
+        if (i === 1) statusCell(td, v);
+        else if (i === 4) {
+          td.textContent = v.text + (v.amount_in && v.amount_out ? ` (${v.amount_in} → ${v.amount_out})` : "");
+          const done = ["SUCCESS", "REFUNDED", "FAILED"].includes(v.swap_status);
+          if (mine && v.swap_status && !done && !watched.has(v.deposit)) td.append(" ", watchButton(v.deposit));
+        } else if (i === 6) {
+          if (!v.swap_status) { td.textContent = "–"; return; }
+          const btn = el("button", v.deposit.slice(0, 10) + "…", "addr"); btn.type = "button"; btn.title = "Check this swap";
+          btn.setAttribute("aria-label", "Check swap " + v.deposit.slice(0, 10));
+          btn.addEventListener("click", () => { $("lookup-h").scrollIntoView(); checkAddress(v.deposit); });
+          td.append(btn);
+        } else if (i === 7) {
+          const a = el("a", v.slice(0, 8) + "…"); a.href = `https://nearblocks.io/txns/${v}`; a.target = "_blank"; a.rel = "noopener noreferrer"; td.append(a);
+        } else td.textContent = v;
+      });
+    prev.disabled = page === 0; next.disabled = page >= pages - 1;
+    info.textContent = `Page ${page + 1} of ${pages} · ${d.activity.length} events`;
+  };
+  prev.addEventListener("click", () => { page = Math.max(0, page - 1); show(); });
+  next.addEventListener("click", () => { page = Math.min(pages - 1, page + 1); show(); });
+  show();
 }
 
 function telegramRow(tg) {
