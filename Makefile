@@ -1,4 +1,4 @@
-.PHONY: serve-tailnet setup test fetch stats demo serve sync partners bench thesis fill-sample partner-report ui-check audit backup
+.PHONY: service serve-tailnet setup test fetch stats demo serve sync partners bench thesis fill-sample partner-report ui-check audit backup
 
 BLOCKS ?= 200
 HOURS ?= 24
@@ -73,3 +73,13 @@ audit: setup
 
 backup: setup
 	uv run intents-desk --db $(DB) backup --out $(BACKUP_DIR)
+
+# Run the live server as a systemd user service that restarts on its own.
+# Settings: ~/.config/intents-desk/{oneclick,telegram,serve}.env (see scripts/serve-live).
+UNIT ?= $(HOME)/.config/systemd/user/intents-desk.service
+service:
+	mkdir -p $(dir $(UNIT))
+	sed 's#@DIR@#$(CURDIR)#g' deploy/systemd/intents-desk.service > $(UNIT)
+	systemctl --user daemon-reload
+	systemctl --user enable --now intents-desk
+	systemctl --user --no-pager status intents-desk | head -5

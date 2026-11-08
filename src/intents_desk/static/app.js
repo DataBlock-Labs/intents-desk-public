@@ -132,6 +132,52 @@ async function showPartner() {
 window.addEventListener("hashchange", showPartner);
 $("partner-close").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showPartner(); });
 
+// ---------- Past incidents (#incident=<id>) ----------
+const utc = (s) => s ? s.slice(5, 16).replace("T", " ") + " UTC" : "ongoing";
+const lasted = (i) => { const h = Math.round(((i.ended_at ? new Date(i.ended_at) : Date.now()) - new Date(i.started_at)) / 3600000); return h + " h"; };
+async function loadIncidents() {
+  const [ok, d] = await getJSON("/api/incidents");
+  if (!ok) { $("incidents-note").textContent = d.error || "Incidents unavailable"; return; }
+  const list = d.incidents || [];
+  $("incidents-note").textContent = list.length ? `${list.length} found` : "None found yet";
+  table($("incidents"), [["Partner"], ["Started"], ["Lasted", 1], ["Swaps", 1], ["Bad", 1], ["Failed", 1], ["Top reason"]],
+    list.map((i) => [i, utc(i.started_at), lasted(i), fmt(i.swaps), i.bad_pct + "%", fmt(i.failed), i.top_reason || "–"]),
+    (td, v, c) => {
+      if (c !== 0) { td.textContent = v; return; }
+      if (!v.ended_at) td.append(el("span", "ONGOING", "alert"), " ");
+      const name = v.referral.length > 34 ? v.referral.slice(0, 32) + "…" : v.referral;
+      const a = el("a", name, "small"); a.href = "#incident=" + encodeURIComponent(v.id); a.title = "Open incident " + v.id; td.append(a);
+    });
+  $("gaps").textContent = (d.gaps || []).length ? "Data gaps (sync missed these hours): " + d.gaps.map(([a, b]) => a === b ? utc(a) : `${utc(a)} to ${utc(b)}`).join("; ") : "";
+}
+
+async function showIncident() {
+  const m = location.hash.match(/^#incident=(.+)$/), box = $("incident-view");
+  if (!m) { box.classList.add("hidden"); return; }
+  const id = decodeURIComponent(m[1]);
+  const [ok, i] = await getJSON("/api/incident?id=" + encodeURIComponent(id));
+  box.classList.remove("hidden");
+  $("incident-name").textContent = id;
+  if (!ok) { $("incident-stats").textContent = i.error || "Incident not found."; return; }
+  const others = i.others_pct == null ? "" : ` · partners without an incident: ${i.others_pct}%`;
+  const top = i.partners?.length ? ` · top partners: ${i.partners.map(([p, n]) => `${p} (${fmt(n)})`).join(", ")}` : "";
+  $("incident-stats").textContent = `${utc(i.started_at)} → ${utc(i.ended_at)} · ${fmt(i.swaps)} swaps · ${fmt(i.refunded)} refunded · ${fmt(i.failed)} failed · ${i.bad_pct}% bad${others}${i.senders != null ? ` · ${fmt(i.senders)} senders` : ""}${top}`;
+  $("incident-bars").replaceChildren(...i.hours.map(([h, n, p]) => { const b = el("span"); b.style.height = Math.max(p, 2) + "%"; b.title = `${utc(h)}: ${p}% of ${fmt(n)} swaps refunded or failed`; return b; }));
+  table($("incident-routes"), [["From → to"], ["Swaps", 1], ["Bad", 1]], i.routes.map(([r, n, p]) => [r, fmt(n), p + "%"]));
+  table($("incident-evidence"), [["Created (UTC)"], ["Status"], ["Reason"], ["Route"], ["Amount", 1], ["NEAR tx"]],
+    i.evidence.map((e) => [e.created_at.slice(5, 19).replace("T", " "), e.status, e.reason || "–", e.route, e.amount_in, e.near_tx]),
+    (td, v, c) => {
+      if (c === 1) statusCell(td, v);
+      else if (c === 5) { if (!v.length) td.textContent = "none (no funds moved)";
+        v.forEach((t) => { const a = el("a", t.slice(0, 8) + "…", "small"); a.href = "https://nearblocks.io/txns/" + encodeURIComponent(t); a.rel = "noopener"; a.target = "_blank"; td.append(a, " "); }); }
+      else td.textContent = v ?? "–";
+    });
+  if (!i.evidence.length) $("incident-evidence").replaceChildren(el("caption", "No sample stored for this incident.", "dim small"));
+  box.scrollIntoView({ block: "start" });
+}
+window.addEventListener("hashchange", showIncident);
+$("incident-close").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showIncident(); });
+
 // ---------- Recent swaps ----------
 let swapLimit = 25;  // a short first table on phones; "Show 100" for more
 async function loadSwaps() {
@@ -398,9 +444,12 @@ loadHealth().catch((e) => { $("pill").textContent = "Could not load: " + e; });
 loadFeed();
 loadMine();
 loadSwaps();
+loadIncidents();
 const whenVisible = (fn) => () => { if (!document.hidden) fn(); };  // no polling in a background tab
 setInterval(whenVisible(loadHealth), 60000);
 setInterval(whenVisible(loadSwaps), 60000);
+setInterval(whenVisible(loadIncidents), 300000);
 document.addEventListener("visibilitychange", whenVisible(() => { loadHealth(); loadSwaps(); }));
 (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => connector().catch(() => {}));
 showPartner();
+showIncident();

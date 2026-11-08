@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Start the live server with the env files from ~/.config/intents-desk (used by systemd).
+# serve.env holds the machine settings (SWAP_LIVE, PUBLIC_HOST, BACKUP_*); no keys here.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+CFG="${INTENTS_DESK_CONFIG:-$HOME/.config/intents-desk}"
+set -a
+for f in oneclick.env telegram.env serve.env; do
+  [ -f "$CFG/$f" ] && . "$CFG/$f"
+done
+set +a
+XENV="${XENV:-$HOME/.config/last30days/.env}"
+X_BEARER_TOKEN="$(grep -s '^X_BEARER_TOKEN=' "$XENV" | cut -d= -f2- | tr -d '"' || true)"
+export X_BEARER_TOKEN
+exec uv run intents-desk --db "${DB:-data/desk-live.duckdb}" serve --port "${PORT:-8420}"

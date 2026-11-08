@@ -143,6 +143,25 @@
     </div>
   </section>
 
+  <section aria-labelledby="incidents-h">
+    <h2 id="incidents-h">Past incidents <span id="incidents-note" class="note dim small"></span></h2>
+    <p class="dim small">An incident: a partner with at least 50 swaps and 50% refunded or failed in an hour, or over 10% of all swaps. It ends after 2 clean hours.</p>
+    <div class="scroll"><table id="incidents"></table></div>
+    <p id="gaps" class="dim small"></p>
+    <div id="incident-view" class="hidden">
+      <h2 class="plain">Incident <span id="incident-name" class="note small"></span></h2>
+      <p id="incident-stats" class="dim small" role="status" aria-atomic="true"></p>
+      <p class="dim small" id="incident-hourly-label">Refunded or failed share, per hour (UTC).</p>
+      <div id="incident-bars" class="bars" role="img" aria-labelledby="incident-hourly-label"></div>
+      <div class="cols mt">
+        <div><h2 class="plain">Routes</h2><div class="scroll"><table id="incident-routes"></table></div></div>
+        <div><h2 class="plain">Evidence: sample swaps</h2><div class="scroll"><table id="incident-evidence"></table></div>
+          <p class="dim small">Each NEAR transaction links to nearblocks. Deposit addresses are shortened; senders are never shown.</p></div>
+      </div>
+      <p class="small"><a href="#" id="incident-close">Close incident</a></p>
+    </div>
+  </section>
+
   <section id="partner-view" class="hidden" aria-labelledby="partner-h">
     <h2 id="partner-h">Partner <span id="partner-name" class="note small"></span></h2>
     <p id="partner-stats" class="dim small" role="status" aria-atomic="true"></p>

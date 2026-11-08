@@ -1,0 +1,14 @@
+# Intents Desk on this machine (tailnet). Install with `make service`.
+[Unit]
+Description=Intents Desk (live, tailnet)
+After=network-online.target
+
+[Service]
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/scripts/serve-live
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

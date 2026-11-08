@@ -150,6 +150,9 @@ def connect(path: str | Path = "data/desk.duckdb") -> duckdb.DuckDBPyConnection:
     from .ops import ensure  # the shared operations audit tables
 
     ensure(con)
+    from .incidents import ensure as ensure_incidents
+
+    ensure_incidents(con)
     con.execute(  # fees earned per day; other DataBlock products read the same view
         "CREATE VIEW IF NOT EXISTS ops.daily_revenue AS"
         " SELECT CAST(settled_at AS DATE) AS day, count(*) AS swaps,"
@@ -337,7 +340,8 @@ def partner_report(con, hours: float, min_swaps: int, alert_pct: float):
             count(DISTINCT refund_to) AS senders,
             mode(refund_reason) FILTER (WHERE status = 'REFUNDED') AS top_reason,
             CAST(min(created_at) AS VARCHAR) AS first_seen,
-            count(*) >= $min AND 100 * avg((status = 'REFUNDED')::INT) >= $pct
+            count(*) >= $min  -- FAILED counts as bad too (Nov 4-5: 4.7% failed)
+                AND 100 * avg((status IN ('REFUNDED', 'FAILED'))::INT) >= $pct
                 AS alert
         FROM silver.swap
         WHERE created_at > (SELECT max(created_at) FROM silver.swap)
