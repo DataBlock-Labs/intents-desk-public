@@ -1,16 +1,22 @@
 """X posts that the owner approves one by one in Telegram, then the server posts.
 
 Each draft is shown to the owner with buttons. A press is the owner's explicit yes for
-that one post. Posting runs X's official `xurl` CLI (OAuth 1.0a keys in ~/.xurl; this
-code never reads them) and only where X_POST=1. A draft is single use and expires after
+that one post. Posting signs the request with OAuth 1.0a (X_CONSUMER_KEY, X_CONSUMER_SECRET,
+X_ACCESS_TOKEN, X_TOKEN_SECRET in the server env) and only where X_POST=1. A draft is single use and expires after
 24 hours. Costs (X API, 2026): $0.015 a post, $0.20 when the post holds a link.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
-import subprocess
+import time
+import urllib.error
+import urllib.request
+from urllib.parse import quote
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS app.x_draft (
@@ -76,23 +82,54 @@ def preview(con, draft_id: str) -> str:
     return f"{head}. Nothing is posted until you press a button.\n\n{text}{tail}"
 
 
-def run_xurl(args: list[str]) -> str:
-    """Run xurl with an argument list (never a shell); return the new post id."""
-    out = subprocess.run(
-        ["xurl", "--auth", "oauth1", *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+TWEETS = "https://api.x.com/2/tweets"
+KEYS = ("X_CONSUMER_KEY", "X_CONSUMER_SECRET", "X_ACCESS_TOKEN", "X_TOKEN_SECRET")
+
+
+def oauth1_header(method: str, url: str, params: dict | None = None, nonce: str | None = None, timestamp: str | None = None) -> str:  # fmt: skip
+    """The OAuth 1.0a HMAC-SHA1 Authorization header. A JSON body is not signed."""
+    ck, cs, tok, ts = (os.environ[k] for k in KEYS)
+    oauth = {
+        "oauth_consumer_key": ck,
+        "oauth_nonce": nonce or secrets.token_hex(16),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": timestamp or str(int(time.time())),
+        "oauth_token": tok,
+        "oauth_version": "1.0",
+    }
+    pairs = sorted(
+        (quote(k, ""), quote(v, "")) for k, v in {**(params or {}), **oauth}.items()
     )
-    if out.returncode != 0:
-        raise RuntimeError(
-            f"xurl exit {out.returncode}"
-        )  # stderr may hold request details
+    base = "&".join(
+        quote(x, "") for x in (method, url, "&".join(f"{k}={v}" for k, v in pairs))
+    )
+    key = f"{quote(cs, '')}&{quote(ts, '')}".encode()
+    oauth["oauth_signature"] = base64.b64encode(
+        hmac.new(key, base.encode(), hashlib.sha1).digest()
+    ).decode()
+    return "OAuth " + ", ".join(
+        f'{k}="{quote(v, "")}"' for k, v in sorted(oauth.items())
+    )
+
+
+def post(text: str, reply_to: str | None = None) -> str:
+    """Post to X as the owner's account; return the new post id."""
+    body: dict = {"text": text}
+    if reply_to:
+        body["reply"] = {"in_reply_to_tweet_id": reply_to}
+    req = urllib.request.Request(TWEETS, json.dumps(body).encode(), method="POST", headers={
+        "Authorization": oauth1_header("POST", TWEETS),
+        "Content-Type": "application/json",
+    })  # fmt: skip
     try:
-        return str(json.loads(out.stdout)["data"]["id"])
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return str(json.load(r)["data"]["id"])
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"X said HTTP {e.code}"
+        ) from None  # the body may echo the request
     except (ValueError, KeyError, TypeError):
-        raise RuntimeError("xurl gave no post id") from None
+        raise RuntimeError("X gave no post id") from None
 
 
 def decide(con, draft_id: str, action: str) -> str:
@@ -113,26 +150,25 @@ def decide(con, draft_id: str, action: str) -> str:
         return "This draft is older than 24 hours and expired. Nothing was posted."
     if status == "skipped":
         return "Skipped. Nothing was posted."
-    if not enabled():
+    if not enabled() or not all(os.environ.get(k) for k in KEYS):
         con.execute(
             "UPDATE app.x_draft SET status = 'pending' WHERE id = ?", [draft_id]
         )
         return (
-            "Posting is off on this server (X_POST is not 1). The draft is still open."
+            "Posting is off on this server (X_POST=1 and the 4 X_* keys are needed)."
+            " The draft is still open."
         )
     try:
         if kind == "reply":
             body = f"{text}\n{link}" if action == "link" and link else text
-            post_id = run_xurl(["reply", reply_to, body])
+            post_id = post(body, reply_to)
         else:
-            post_id = run_xurl(["post", text])
+            post_id = post(text)
             if action == "link" and link:
-                run_xurl(["reply", post_id, link])
-    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+                post(link, post_id)
+    except (RuntimeError, OSError) as exc:
         con.execute("UPDATE app.x_draft SET status = 'failed' WHERE id = ?", [draft_id])
-        return (
-            f"Posting failed ({type(exc).__name__}). Check `xurl --auth oauth1 whoami`."
-        )
+        return f"Posting failed: {exc}. Check that the X app has Read and Write access."
     con.execute(
         "UPDATE app.x_draft SET status = 'posted', post_id = ? WHERE id = ?",
         [post_id, draft_id],

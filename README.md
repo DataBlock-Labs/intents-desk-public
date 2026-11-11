@@ -211,7 +211,8 @@ keeping them.
 - **X:**
   - The owner's Telegram gets each incident post, and each reply to an X post that named a swap, as a draft with buttons: Post ($0.015), Post + link ($0.20–0.215) and Skip.
   - Only a press from the owner's chat counts. Each draft is single use and expires after 24 h.
-  - Posting runs `xurl --auth oauth1` and needs `X_POST=1` on the server; the keys stay in `~/.xurl`. Nothing is posted without a press.
+  - Posting signs the request with OAuth 1.0a. It needs `X_POST=1` and the keys `X_CONSUMER_KEY`, `X_CONSUMER_SECRET`, `X_ACCESS_TOKEN` and `X_TOKEN_SECRET` in the server env. Nothing is posted without a press.
+  - The IronClaw agent can also draft a post with `POST /api/agent/x-draft {"text", "link"}`. The draft goes to the owner's Telegram with the same buttons.
 
 ## Custom alerts
 

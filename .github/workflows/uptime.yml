@@ -1,0 +1,15 @@
+# Outside uptime check: every 30 min, GET /healthz on the live site.
+# A failed run makes GitHub email the account that last pushed this file.
+# Runs only on the public repo (free minutes); on the private repo the job is skipped.
+name: uptime
+on:
+  schedule: [{ cron: "7,37 * * * *" }]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  check:
+    if: github.repository == 'DataBlock-Labs/intents-desk-public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: curl -fsS --max-time 20 --retry 2 --retry-delay 30 --retry-all-errors https://intents.datablock.pro/healthz

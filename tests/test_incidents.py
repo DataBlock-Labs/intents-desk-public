@@ -274,3 +274,18 @@ def test_masked_detail_has_no_evidence(con, monkeypatch, tmp_path):
         incidents.public(inc)["blocks"] is None
         and not incidents.public(inc)["reproduce"]
     )
+
+
+def test_open_post_names_the_route_with_most_bad_swaps():
+    inc = {"scope": "network", "referral": "the whole network", "started_at": "2026-11-11T07:00:00Z",
+           "ended_at": None, "swaps": 176, "refunded": 1, "failed": 47, "bad_pct": 27.3,
+           "others_pct": None, "top_reason": "INSUFFICIENT_BALANCE", "evidence": [],
+           "routes": [["base → base", 25, 0.0], ["zec → zec", 48, 97.9]]}  # fmt: skip
+    text = incidents.post_text(inc, masked=True)
+    assert (
+        "48 of 176" in text
+        and "47 of them are on zec → zec" in text
+        and len(text) <= 280
+    )
+    inc["routes"] = [["zec → zec", 48, 20.0]]  # 10 of 48 bad: not the main cause
+    assert "of them are on" not in incidents.post_text(inc, masked=True)
