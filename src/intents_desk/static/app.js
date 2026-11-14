@@ -340,13 +340,43 @@ document.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", ()
 // ---------- Wallet sign-in (NEP-413 signed message; no transaction) ----------
 let me = null;
 // The wallet library (61 KB, plus its wallet list and frames) loads after the page shows data.
-let ncPromise = null;
+let ncPromise = null, ncReady = null;  // ncReady: the loaded library, for use with no wait
 const connector = () => (ncPromise ??= import("/static/near-connect.js").then(
-  (m) => new m.NearConnector({ network: "mainnet", features: { signMessage: true },
-    cspNonce: document.querySelector("script[nonce]")?.nonce })));  // wallet code runs inline
+  (m) => (ncReady = new m.NearConnector({ network: "mainnet", features: { signMessage: true },
+    cspNonce: document.querySelector("script[nonce]")?.nonce }))));  // wallet code runs inline
+
+// The sign-in challenge is fetched before the tap, so a tap on Connect reaches the wallet
+// library with no network wait (a phone browser may block a wallet window that opens after
+// one). The server keeps a challenge for 300 s and accepts it once. While signed out and
+// visible, the page gets a new one when the one in hand is 90 s old, gives each one to the
+// wallet once, and uses none older than 150 s: the wallet still has its 2 minutes to answer.
+const CHALLENGE_REFRESH_MS = 90000, CHALLENGE_MAX_AGE_MS = 150000;
+let signingIn = false, challenge = null, challengeAt = 0, challengeLoading = false;
+const challengeAge = () => { const age = Date.now() - challengeAt; return age >= 0 ? age : Infinity; };  // clock set back: old
+async function fetchChallenge() {
+  const [ok, ch] = await getJSON("/api/auth/challenge", { cache: "no-store" });
+  if (!ok || !ch.nonce) throw new Error(ch.error || "Could not start the sign-in. Try again.");
+  return ch;
+}
+async function keepChallenge() {
+  if (me || signingIn || document.hidden || challengeLoading) return;
+  if (challenge && challengeAge() < CHALLENGE_REFRESH_MS) return;
+  challengeLoading = true;
+  const asked = Date.now();  // the age counts from before the request: never too young
+  try { const ch = await fetchChallenge(); if (!me) { challenge = ch; challengeAt = asked; } }
+  catch { /* none in hand: the tap fetches its own */ }
+  finally { challengeLoading = false; }
+}
+// The challenge for this tap, or null if none is fresh. One sign-in try per challenge.
+function takeChallenge() {
+  const ch = challenge && challengeAge() <= CHALLENGE_MAX_AGE_MS ? challenge : null;
+  challenge = null;
+  return ch;
+}
 
 function showAccount(account) {
   me = account;
+  if (account) challenge = null; else keepChallenge();
   $("connect").classList.toggle("hidden", !!account);
   $("who").classList.toggle("hidden", !account); $("who").textContent = account || "";
   $("signout").classList.toggle("hidden", !account);
@@ -590,18 +620,20 @@ for (const ev of ["error", "unhandledrejection"]) window.addEventListener(ev, (e
   const msg = e.reason?.message || e.message || String(e.reason || "unknown error");
   $("mine-out").append(el("p", "Page error: " + msg, "dim"));
 });
-let signingIn = false;
 $("connect").addEventListener("click", async () => {
   const btn = $("connect");
   if (signingIn) { location.reload(); return; }  // second tap cancels a wallet that never answers
   signingIn = true; btn.textContent = "Waiting for wallet… (tap to cancel)";
   let timer;
   try {
-    const [, ch] = await getJSON("/api/auth/challenge");
+    // The usual case: a fresh challenge and the wallet library are in hand, so nothing is
+    // awaited between the tap and nc.connect(). Without them the old order applies: fetch
+    // the challenge, load the library, then call the wallet.
+    const ch = takeChallenge() ?? await fetchChallenge();
     const params = { message: ch.message, recipient: ch.recipient, nonce: Uint8Array.from(atob(ch.nonce), (c) => c.charCodeAt(0)) };
     const step = (t) => $("mine-out").replaceChildren(el("p", t, "dim"));
-    step("Loading the wallet list…");
-    const nc = await connector();
+    if (!ncReady) step("Loading the wallet list…");
+    const nc = ncReady ?? await connector();
     step("Pick a wallet in the list. It opens your wallet to sign one message (no fee).");
     // connect() lists only wallets that sign in and sign the message in one step, and it
     // emits this event before it returns. So one prompt only: no second signMessage popup.
@@ -616,7 +648,7 @@ $("connect").addEventListener("click", async () => {
     await loadMine();
   } catch (err) {
     $("mine-out").replaceChildren(el("p", "Sign-in did not finish: " + (err?.message || err), "dim"));
-  } finally { clearTimeout(timer); signingIn = false; btn.textContent = "Connect wallet"; }
+  } finally { clearTimeout(timer); signingIn = false; btn.textContent = "Connect wallet"; keepChallenge(); }  // a new one for the next tap
 });
 
 $("signout").addEventListener("click", async () => {
@@ -639,7 +671,9 @@ setInterval(whenVisible(loadSwaps), 60000);
 setInterval(whenVisible(loadTickets), 60000);
 setInterval(whenVisible(loadIncidents), 300000);
 setInterval(whenVisible(loadAsks), 300000);
-document.addEventListener("visibilitychange", whenVisible(() => { loadHealth(); loadSwaps(); }));
+document.addEventListener("visibilitychange", whenVisible(() => { loadHealth(); loadSwaps(); keepChallenge(); }));
+setInterval(keepChallenge, 30000);  // a check only: it asks the server when the challenge is 90 s old
+window.addEventListener("pageshow", (e) => { if (e.persisted) keepChallenge(); });  // back from a wallet app
 (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => connector().catch(() => {}));
 showPartner();
 showIncident();
