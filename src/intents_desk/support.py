@@ -62,6 +62,11 @@ REASONS = {
         "The amount was below the smallest amount that the chain can withdraw.",
         "Use a larger amount.",
     ),
+    "AMOUNT_LESS_THAN_MIN_AMOUNT_OUT": (
+        "The swap would have paid out less than the minimum the quote allowed"
+        " (its slippage limit), so it was refunded.",
+        "Get a new quote, with a higher slippage limit or a larger amount.",
+    ),
     "INSUFFICIENT_BALANCE": (
         "The NEAR Intents balance was too small when the swap ran. No funds moved.",
         "Check your NEAR Intents balance, then try again.",
