@@ -641,12 +641,22 @@ def post_text(inc: dict, masked: bool = False) -> str:
             f" refunded ({inc['top_reason']}).{failed}{others}"
         )
     else:
+        bad = inc["refunded"] + inc["failed"]
         body = (
-            f"Heads-up: since {_when(inc['started_at'])}, {inc['bad_pct']}% of NEAR Intents"
-            f" swaps from {who} are refunded or failed ({inc['top_reason']}),"
-            f" {inc['swaps']:,} swaps so far.{failed}{others}"
+            f"Heads-up: since {_when(inc['started_at'])}, {bad:,} of {inc['swaps']:,} NEAR"
+            f" Intents swaps from {who} ({inc['bad_pct']}%) are refunded or failed"
+            f" ({inc['top_reason']}).{_main_route(inc, bad)}{failed}{others}"
         )
     return body
+
+
+def _main_route(inc: dict, bad: int) -> str:
+    """Name the route that holds most of the bad swaps, so a reader sees where it is."""
+    for route, n, pct in inc.get("routes") or []:
+        on_route = round(n * pct / 100)
+        if bad and on_route * 2 > bad:
+            return f" {on_route:,} of them are on {route} ({pct}% of that route)."
+    return ""
 
 
 def owner_chat(con) -> int | None:
@@ -670,7 +680,9 @@ def publish(con, ids: list[str] | None = None, send_drafts: bool = True) -> dict
         if send_drafts:
             telegram.channel_post(channel_text(inc), "incident")
             try:  # the owner approves each X post with a button
-                xpost.offer(con, chat, "incident", post_text(inc), link(inc))
+                xpost.offer(
+                    con, chat, "incident", post_text(inc, masked=True), link(inc)
+                )
             except ValueError:  # over 280 characters: the plain draft to copy
                 telegram.send(chat, draft(inc))
             sent += 1

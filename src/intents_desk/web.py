@@ -13,7 +13,6 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import sys
 import threading
 import time
@@ -889,19 +888,64 @@ def _bot_loop() -> None:
             time.sleep(10)
 
 
+JOB_ALERT_AFTER = 3  # failures in a row before the owner gets one Telegram message
+_jobs: dict[str, dict] = {}  # job -> last ok time, failures in a row, last error type
+
+
+def job_result(name: str, seconds: float, error: str | None = None) -> None:
+    """Record one run of a background job. Tell the owner once when it starts to fail
+    JOB_ALERT_AFTER times in a row, and once when it works again."""
+    now = time.time()
+    j = _jobs.setdefault(name, {"started": now, "ok_at": None, "fails": 0, "error": None, "alerted": False})  # fmt: skip
+    j["seconds"] = seconds
+    if error is None:
+        if j["alerted"]:
+            tell_owner(f"Intents Desk: {name} works again.")
+        j.update(ok_at=now, fails=0, error=None, alerted=False)
+        return
+    j["fails"] += 1
+    j["error"] = error
+    if j["fails"] >= JOB_ALERT_AFTER and not j["alerted"]:
+        j["alerted"] = tell_owner(
+            f"Intents Desk: {name} failed {j['fails']} times in a row ({error})."
+            f" Logs: docker compose logs --since 1h app | grep '[{name}]'"
+        )
+
+
+def tell_owner(text: str) -> bool:
+    """Send one line to the owner's Telegram. False when it could not be sent."""
+    try:
+        chat = incidents.owner_chat(db()) if telegram.enabled() else None
+        if chat is None:
+            return False
+        telegram.send(chat, text)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def health() -> tuple[bool, dict]:
+    """A job is late when it has had no good run for 3 of its intervals (or 15 min)."""
+    now, jobs, ok = time.time(), {}, True
+    for name, j in _jobs.items():
+        since = now - (j["ok_at"] or j["started"])
+        late = since > max(3 * j["seconds"], 900)
+        ok = ok and not late
+        jobs[name] = {"late": late, "fails": j["fails"], "error": j["error"],
+                      "last_ok_min": None if j["ok_at"] is None else round((now - j["ok_at"]) / 60)}  # fmt: skip
+    return ok, jobs
+
+
 def _loop(name: str, fn, seconds: int) -> None:
     while True:
+        wait = seconds() if callable(seconds) else seconds
         try:
             print(f"[{name}] {fn()} rows", file=sys.stderr, flush=True)
-        except (
-            OSError,
-            ValueError,
-            RuntimeError,
-            KeyError,
-            subprocess.SubprocessError,
-        ) as exc:
-            print(f"[{name}] failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        time.sleep(seconds() if callable(seconds) else seconds)
+            job_result(name, wait)
+        except Exception as exc:  # noqa: BLE001  a job thread must never die silently
+            print(f"[{name}] failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)  # fmt: skip
+            job_result(name, wait, type(exc).__name__)
+        time.sleep(wait)
 
 
 _buckets: dict[str, tuple[float, float]] = {}  # client ip -> (tokens, last time)
@@ -998,6 +1042,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path in STATIC:  # fixed allow-list: no path from the URL reaches disk
             body = files("intents_desk").joinpath(path.lstrip("/")).read_bytes()
             self.send(200, body, STATIC[path], Cache_Control="max-age=3600")
+        elif path == "/healthz":  # for the uptime check; job names and error types only
+            ok, jobs = health()
+            self.send_json(200 if ok else 503, {"ok": ok, "jobs": jobs})
         elif path == "/api/summary":
             self.send_json(200, {**get_summary(), **_status})
         elif path == "/api/partners":
@@ -1118,9 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
         size = (
             int(length) if length.isascii() and length.isdigit() else -1
         )  # "-1" or "abc" are refused
-        agent = (
-            urlparse(self.path).path == "/api/agent/alerts"
-        )  # bearer token, no cookie
+        agent = urlparse(self.path).path.startswith("/api/agent/")  # bearer, no cookie
         if not agent and origin not in (f"http://{host}", f"https://{host}"):
             self.send_json(403, {"error": "Cross-site request refused."})
             return
@@ -1191,6 +1236,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(
                 200, {"reply": reply, "rules": alerts.listing(db(), account)}
             )
+        elif path == "/api/agent/x-draft":  # IronClaw drafts; the owner presses Post
+            if not agent_account(self.headers.get("Authorization", "")):
+                self.send_json(401, {"error": "Missing or wrong agent token."})
+                return
+            chat = incidents.owner_chat(db()) if telegram.enabled() else None
+            link, host = body.get("link") or None, os.environ.get("PUBLIC_HOST", "localhost:8420")  # fmt: skip
+            if chat is None:
+                self.send_json(409, {"error": "The owner's Telegram is not linked."})
+            elif link and not str(link).startswith(f"https://{host}/"):
+                self.send_json(400, {"error": f"The link must be on {host}."})
+            else:
+                try:
+                    draft = xpost.offer(db(), chat, "incident", str(body.get("text", "")), link)  # fmt: skip
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                    return
+                reply = "Draft sent to the owner's Telegram. Nothing is posted until Post is pressed."  # fmt: skip
+                self.send_json(200, {"draft": draft, "reply": reply})
         elif path == "/api/ticket":  # "Report publicly" on a case
             key = str(body.get("key", "")).strip()
             if len(key) > 128 or not tickets.KEY.fullmatch(key):

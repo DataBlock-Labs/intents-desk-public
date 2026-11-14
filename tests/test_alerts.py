@@ -187,11 +187,11 @@ def test_owner_rule_goes_to_channel_and_x_draft(con, tg, monkeypatch):
     )
 
 
-def post_agent(host, body, token):
+def post_agent(host, body, token, path="/api/agent/alerts"):
     headers = {"Content-Type": "application/json"}  # no Origin: a server-side caller
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(f"http://{host}/api/agent/alerts", json.dumps(body).encode(), headers)  # fmt: skip
+    req = urllib.request.Request(f"http://{host}{path}", json.dumps(body).encode(), headers)  # fmt: skip
     try:
         with urllib.request.urlopen(req) as r:
             return r.status, json.load(r)
@@ -224,3 +224,35 @@ def test_rules_without_a_linked_chat_are_not_checked(con):
     alerts.add(con, "nobody.near", alerts.parse("network 10"))
     hour_rows(con, good=60, bad=40)
     assert alerts.check(con) == []
+
+
+def test_agent_x_draft_goes_to_the_owner_with_buttons(app, tg, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("AGENT_TOKEN_SHA256", hashlib.sha256(b"s3cret-token").hexdigest())  # fmt: skip
+    monkeypatch.setenv("PUBLIC_HOST", "desk.example")
+    draft = lambda body, token="s3cret-token": post_agent(
+        app, body, token, "/api/agent/x-draft"
+    )
+    assert draft({"text": "zec down"}, "wrong")[0] == 401
+    assert draft({"text": "zec down"})[0] == 409  # owner chat not linked yet
+    web.db().execute("INSERT INTO app.telegram (account_id, chat_id) VALUES ('datablock.near', 7)")  # fmt: skip
+    assert draft({"text": "see https://evil.example"})[0] == 400  # no link in the body
+    assert draft({"text": "zec down", "link": "https://evil.example/"})[0] == 400
+    code, d = draft({"text": "zec down", "link": "https://desk.example/#incident=1"})
+    assert code == 200 and "Nothing is posted" in d["reply"]
+    (chat, text), = tg.sent  # fmt: skip
+    assert chat == 7 and "zec down" in text
+
+
+def test_a_failing_job_alerts_once_and_says_when_it_works(monkeypatch):
+    said = []
+    monkeypatch.setattr(web, "tell_owner", lambda text: said.append(text) or True)
+    web._jobs.clear()
+    for _ in range(4):
+        web.job_result("feed", 60, "HTTPError")
+    assert len(said) == 1 and "feed failed 3 times" in said[0]
+    assert web.health()[1]["feed"]["fails"] == 4
+    web.job_result("feed", 60)
+    assert said[-1] == "Intents Desk: feed works again." and web.health()[0]
+    web._jobs["feed"]["ok_at"] -= 3600  # no good run for an hour: late
+    assert web.health() == (False, web.health()[1]) and web.health()[1]["feed"]["late"]
+    web._jobs.clear()

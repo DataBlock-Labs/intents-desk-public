@@ -1,5 +1,4 @@
 import json
-import subprocess
 
 import pytest
 
@@ -112,6 +111,11 @@ def _draft(con, monkeypatch, kind="incident"):
     return xpost.new_draft(con, kind, "Heads-up: test", "https://desk.example/#incident=1", "99" if kind == "reply" else None)  # fmt: skip
 
 
+def x_keys(monkeypatch):
+    for k in xpost.KEYS:
+        monkeypatch.setenv(k, "test")
+
+
 def press(con, chat, data, user=None):
     query = {"id": "q", "data": data, "message": {"chat": {"id": chat}}, "from": {"id": chat if user is None else user}}  # fmt: skip
     telegram.handle_update(con, {"callback_query": query})
@@ -120,29 +124,25 @@ def press(con, chat, data, user=None):
 def test_only_the_owner_can_approve_and_each_draft_posts_once(con, tg, monkeypatch):
     calls = []
 
-    def fake_run(args, **kw):
-        assert kw.get("shell") in (None, False) and args[:3] == [
-            "xurl",
-            "--auth",
-            "oauth1",
-        ]
-        calls.append(args[3:])
-        return subprocess.CompletedProcess(args, 0, json.dumps({"data": {"id": str(1000 + len(calls))}}), "")  # fmt: skip
+    def fake_post(text, reply_to=None):
+        calls.append([text, reply_to])
+        return str(1000 + len(calls))
 
-    monkeypatch.setattr(xpost.subprocess, "run", fake_run)
+    monkeypatch.setattr(xpost, "post", fake_post)
+    x_keys(monkeypatch)
     monkeypatch.setenv("X_POST", "1")
     d = _draft(con, monkeypatch)
     press(con, 8, f"x:link:{d}")  # not the owner's chat: ignored
     assert calls == [] and tg.sent == []
     press(con, 7, f"x:link:{d}")
-    assert calls == [["post", "Heads-up: test"], ["reply", "1001", "https://desk.example/#incident=1"]]  # fmt: skip
+    assert calls == [["Heads-up: test", None], ["https://desk.example/#incident=1", "1001"]]  # fmt: skip
     assert tg.sent[-1] == (7, "Posted: https://x.com/i/status/1001")
     press(con, 7, f"x:post:{d}")  # a second press
     assert len(calls) == 2 and tg.sent[-1][1] == "This draft was already handled."
 
 
 def test_reply_skip_expiry_and_posting_off(con, tg, monkeypatch):
-    monkeypatch.setattr(xpost.subprocess, "run", lambda *a, **k: pytest.fail("must not post"))  # fmt: skip
+    monkeypatch.setattr(xpost, "post", lambda *a, **k: pytest.fail("must not post"))  # fmt: skip
     d = _draft(con, monkeypatch, "reply")
     monkeypatch.delenv("X_POST", raising=False)
     press(con, 7, f"x:post:{d}")
@@ -166,7 +166,7 @@ def test_draft_rules(con, text, reply_to):
 
 
 def test_group_member_cannot_approve_in_the_owner_chat(con, tg, monkeypatch):
-    monkeypatch.setattr(xpost.subprocess, "run", lambda *a, **k: pytest.fail("must not post"))  # fmt: skip
+    monkeypatch.setattr(xpost, "post", lambda *a, **k: pytest.fail("must not post"))  # fmt: skip
     monkeypatch.setenv("X_POST", "1")
     d = _draft(con, monkeypatch)
     press(con, 7, f"x:post:{d}", user=99)  # owner chat, another person's press
@@ -211,3 +211,23 @@ def test_channel_incident_link_only_when_names_are_masked(monkeypatch):
     monkeypatch.setenv("MASK_PARTNERS", "1")
     text = incidents.channel_text(inc)
     assert "#incident=partner-" in text and "evil" not in text
+
+
+def test_oauth1_signature_matches_the_x_example(monkeypatch):
+    keys = ("xvz1evFS4wEEPTGEFPHBog", "kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw",
+            "370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb", "LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE")  # fmt: skip
+    for k, v in zip(xpost.KEYS, keys):
+        monkeypatch.setenv(k, v)  # X's documented example request, not real keys
+    params = {"status": "Hello Ladies + Gentlemen, a signed OAuth request!", "include_entities": "true"}  # fmt: skip
+    header = xpost.oauth1_header("POST", "https://api.twitter.com/1.1/statuses/update.json", params, "kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg", "1318622958")  # fmt: skip
+    assert 'oauth_signature="hCtSmYh%2BiHYCEqBWrE7C7hYmtUk%3D"' in header
+
+
+def test_posting_is_off_without_the_keys(con, tg, monkeypatch):
+    monkeypatch.setattr(xpost, "post", lambda *a, **k: pytest.fail("must not post"))
+    monkeypatch.setenv("X_POST", "1")
+    for k in xpost.KEYS:
+        monkeypatch.delenv(k, raising=False)
+    d = _draft(con, monkeypatch)
+    press(con, 7, f"x:post:{d}")
+    assert "Posting is off" in tg.sent[-1][1]

@@ -1,6 +1,6 @@
 ---
 name: intents-desk-alerts
-version: 0.1.0
+version: 0.2.0
 description: Create, list and stop Intents Desk alerts for the owner (Telegram, the public channel, X drafts) from a plain request. Start a message with $alerts to use it.
 activation:
   keywords:
@@ -53,6 +53,16 @@ Add ` +channel` to also post to the public Telegram channel, and ` +x` to also g
 3. Run this one command, with the command text in place of COMMAND (keep the JSON quotes):
    `curl -s --max-time 20 -X POST "$INTENTS_DESK_URL/api/agent/alerts" -H "Authorization: Bearer $INTENTS_DESK_TOKEN" -H "Content-Type: application/json" -d '{"text": "COMMAND"}'`
 4. Reply with the `reply` field, in at most 4 lines. If there is an `error` field, show it and suggest the fix.
+
+## Draft an X post
+
+When the owner asks to "tweet", "post on X" or "draft a post" about an incident:
+
+1. Write the post: at most 280 characters, no link, no partner names (use the alias the site shows).
+   Say what is wrong, since when, how many swaps, and the route or reason.
+2. Send it, with an optional link to the incident page on `$INTENTS_DESK_URL`:
+   `curl -s --max-time 20 -X POST "$INTENTS_DESK_URL/api/agent/x-draft" -H "Authorization: Bearer $INTENTS_DESK_TOKEN" -H "Content-Type: application/json" -d '{"text": "POST TEXT", "link": "LINK"}'`
+3. Reply with the `reply` field. The owner presses Post in Telegram. You never post to X yourself.
 
 ## Examples
 
