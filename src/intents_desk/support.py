@@ -63,8 +63,7 @@ REASONS = {
         "Use a larger amount.",
     ),
     "AMOUNT_LESS_THAN_MIN_AMOUNT_OUT": (
-        "The swap would have paid out less than the minimum the quote allowed"
-        " (its slippage limit), so it was refunded.",
+        "The output was below the quote's slippage limit, so it was refunded.",
         "Get a new quote, with a higher slippage limit or a larger amount.",
     ),
     "INSUFFICIENT_BALANCE": (
