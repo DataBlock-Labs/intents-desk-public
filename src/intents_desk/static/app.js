@@ -172,9 +172,10 @@ async function loadHealth() {
     else td.textContent = i === 1 ? fmt(v) : i === 2 ? v + "%" : usd(v);
   });
   const [, hours] = await getJSON("/api/hourly");
-  $("bars").replaceChildren(...(hours || []).map(([h, n, p]) => { const b = el("span"); b.style.height = Math.max(p, 2) + "%"; b.title = `${h}: ${p}% of ${fmt(n)} swaps refunded`; return b; }));
+  const top = Math.max(5, Math.ceil(Math.max(0, ...(hours || []).map((x) => x[2])) / 5) * 5);  // refund rates sit near 2%: a 0–100 scale is flat
+  $("bars").replaceChildren(...(hours || []).map(([h, n, p]) => { const b = el("span"); b.style.height = Math.max(p / top * 100, 2) + "%"; b.title = `${h}: ${p}% of ${fmt(n)} swaps refunded`; return b; }));
   if (hours?.length) { const f = hours[0], l = hours[hours.length - 1];
-    $("bars-axis").replaceChildren(el("span", `${f[0].slice(11, 16)} UTC: ${f[2]}%`), el("span", `bar height = % refunded (0–100)`), el("span", `${l[0].slice(11, 16)} UTC: ${l[2]}%`)); }
+    $("bars-axis").replaceChildren(el("span", `${f[0].slice(11, 16)} UTC: ${f[2]}%`), el("span", `bar height = % refunded (0–${top}%)`), el("span", `${l[0].slice(11, 16)} UTC: ${l[2]}%`)); }
   table($("hourly"), [["Hour (UTC)"], ["Swaps", 1], ["Refunded", 1]], (hours || []).map(([h, n, p]) => [h, fmt(n), p + "%"]));
   fillSelect($("f-partner"), (parts || []).map((p) => p[0]));
   fillSelect($("f-route"), d.routes.map(([r]) => r));
