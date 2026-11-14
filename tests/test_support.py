@@ -32,6 +32,15 @@ def fake(monkeypatch):
     server.stop()
 
 
+def test_every_refund_reason_seen_live_is_explained():
+    seen = [
+        "QUOTE_EXPIRED",
+        "NO_LIQUIDITY",
+        "AMOUNT_LESS_THAN_MIN_AMOUNT_OUT",
+    ]  # live, Nov 9
+    assert all(all(support.REASONS[r]) for r in seen)
+
+
 def test_case_explains_the_swap_with_chain_refs_and_no_addresses(con):
     con.execute(
         "INSERT INTO app.tx_block VALUES (?, ?, now())",
