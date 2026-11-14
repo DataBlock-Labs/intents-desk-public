@@ -35,10 +35,13 @@ const u32 = (n) => { const a = new Uint8Array(4); new DataView(a.buffer).setUint
 const str = (t) => { const d = new TextEncoder().encode(t); return [u32(d.length), d]; };
 const cat = (parts) => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let i = 0; for (const p of parts) { out.set(p, i); i += p.length; } return out; };
 export class NearConnector {
-  constructor() { this.handlers = {}; }
+  constructor() { this.handlers = {}; window.__walletReady = true; }
   on(name, fn) { (this.handlers[name] ||= []).push(fn); }
   off(name, fn) { this.handlers[name] = (this.handlers[name] || []).filter((f) => f !== fn); }
   async connect({ signMessageParams: p }) {
+    // What the page had done when it called the wallet (see WATCH_SIGN_IN_JS).
+    (window.__connects ||= []).push({ inTap: window.__inTap === true, sentAtTap: window.__sentAtTap,
+      sentAtCall: (window.__challenges || []).length, nonce: btoa(String.fromCharCode(...p.nonce)) });
     const key = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const pub = new Uint8Array(await crypto.subtle.exportKey("raw", key.publicKey));
     const payload = cat([u32(2 ** 31 + 413), ...str(p.message), p.nonce, ...str(p.recipient), new Uint8Array([0])]);
@@ -415,6 +418,172 @@ def test_recover_a_refund_at_todays_price(live_app, page):
     sent = page.evaluate("window.__sent")
     assert sent[-1]["actions"][0]["params"]["deposit"] == str(2 * 10**24)
     assert page.errors == []
+
+
+# Runs before the page's code. It logs every challenge request (and the nonce in its reply),
+# and wraps the Connect tap handler: __inTap is true only until the handler's first await.
+WATCH_SIGN_IN_JS = r"""
+window.__challenges = []; window.__connects = []; window.__sentAtTap = 0;
+const realFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  if (!String(args[0]).includes("/api/auth/challenge")) return realFetch(...args);
+  const entry = { done: false, nonce: null }; window.__challenges.push(entry);
+  const reply = await realFetch(...args);
+  entry.nonce = (await reply.clone().json().catch(() => ({}))).nonce ?? null; entry.done = true;
+  return reply;
+};
+const add = EventTarget.prototype.addEventListener;
+EventTarget.prototype.addEventListener = function (type, fn, ...rest) {
+  if (type !== "click" || this.id !== "connect") return add.call(this, type, fn, ...rest);
+  return add.call(this, type, function (e) {
+    window.__inTap = true; window.__sentAtTap = window.__challenges.length;
+    try { return fn.call(this, e); } finally { window.__inTap = false; }
+  }, ...rest);
+};
+"""
+
+
+def watch_sign_in(page, faked):
+    """Use the test wallet, and log each challenge request and each call to the wallet."""
+    if not faked:
+        pytest.skip("the test wallet needs the fake RPC (FullAccess) behind the server")
+    page.add_init_script(WATCH_SIGN_IN_JS)
+    page.route(
+        "**/static/near-connect.js",
+        lambda r: r.fulfill(
+            status=200, content_type="text/javascript", body=TEST_WALLET_JS
+        ),
+    )
+
+
+def wait_until(page, expression, seconds=10):
+    """Poll from here: the page's CSP stops the eval that wait_for_function polls with."""
+    deadline = time.monotonic() + seconds
+    while not page.evaluate(expression):
+        assert time.monotonic() < deadline, f"never true: {expression}"
+        page.wait_for_timeout(50)
+
+
+def challenge_in_hand(page, count=1):
+    """Wait until the page has the wallet library and the reply to request `count`."""
+    wait_until(page, "window.__walletReady === true")
+    wait_until(
+        page,
+        f"window.__challenges.length === {count} && window.__challenges[{count - 1}].done",
+    )
+    page.wait_for_timeout(200)  # the page stores the reply just after the fetch ends
+
+
+def sign_in_log(page):
+    return page.evaluate("[window.__challenges, window.__connects]")
+
+
+def test_connect_tap_calls_the_wallet_with_no_request_in_between(app, page):
+    url, faked = app
+    watch_sign_in(page, faked)
+    open_page(page, url)
+    challenge_in_hand(page)  # fetched on page load, before any tap
+    page.click("#connect")
+    expect(page.locator("#who")).to_have_text("test.near")
+    challenges, (first,) = sign_in_log(page)
+    # the wallet was called before the handler's first await, with no request after the tap
+    assert first["inTap"] is True
+    assert (first["sentAtTap"], first["sentAtCall"]) == (1, 1)
+    assert [c["nonce"] for c in challenges] == [first["nonce"]]
+    # signed out again: the used challenge is not kept, a new one is fetched for the next tap
+    page.click("#signout")
+    expect(page.locator("#connect")).to_be_visible()
+    challenge_in_hand(page, 2)
+    page.click("#connect")
+    expect(page.locator("#who")).to_have_text("test.near")
+    challenges, (_, second) = sign_in_log(page)
+    assert second["inTap"] is True
+    assert (second["sentAtTap"], second["sentAtCall"]) == (2, 2)
+    assert [c["nonce"] for c in challenges] == [first["nonce"], second["nonce"]]
+    assert second["nonce"] != first["nonce"]
+    assert page.errors == []
+
+
+def test_sign_in_fetches_a_challenge_after_the_tap_when_none_is_in_hand(app, page):
+    url, faked = app
+    watch_sign_in(page, faked)
+    gate = {"open": False}  # the request on page load fails (a phone with no signal)
+    page.route(
+        "**/api/auth/challenge",
+        lambda r: r.continue_() if gate["open"] else r.abort(),
+    )
+    open_page(page, url)
+    wait_until(
+        page, "window.__walletReady === true && window.__challenges.length === 1"
+    )
+    page.wait_for_timeout(200)
+    gate["open"] = True
+    page.click("#connect")  # the old order: fetch the challenge, then call the wallet
+    expect(page.locator("#who")).to_have_text("test.near")
+    challenges, (call,) = sign_in_log(page)
+    assert call["inTap"] is False
+    assert (call["sentAtTap"], call["sentAtCall"]) == (1, 2)
+    assert call["nonce"] == challenges[1]["nonce"]
+
+
+def test_challenge_is_renewed_and_an_old_one_is_never_used(app, page):
+    url, faked = app
+    watch_sign_in(page, faked)
+    gate = {"open": True}
+    page.route(
+        "**/api/auth/challenge",
+        lambda r: r.continue_() if gate["open"] else r.abort(),
+    )
+    page.clock.install()
+    open_page(page, url)
+    challenge_in_hand(page)
+    page.clock.fast_forward(100_000)  # over 90 s old: the page gets a new one by itself
+    challenge_in_hand(page, 2)
+    gate["open"] = False  # the phone sleeps past the 150 s limit and the renewal fails
+    page.clock.fast_forward(200_000)
+    wait_until(page, "window.__challenges.length === 3")
+    page.wait_for_timeout(200)
+    gate["open"] = True
+    page.click("#connect")  # the one in hand is too old: a new one, then the wallet
+    expect(page.locator("#who")).to_have_text("test.near")
+    challenges, (call,) = sign_in_log(page)
+    assert (call["sentAtTap"], call["sentAtCall"]) == (3, 4)
+    assert call["nonce"] == challenges[3]["nonce"]
+    assert call["nonce"] not in (challenges[0]["nonce"], challenges[1]["nonce"])
+
+
+def test_challenge_the_server_already_took_is_refused_then_replaced(app, page):
+    url, faked = app
+    watch_sign_in(page, faked)
+    replies = []
+
+    def challenge(route):  # the second request gets the first reply again (a replay)
+        if len(replies) == 1:
+            replies.append(replies[0])
+            route.fulfill(status=200, content_type="application/json", body=replies[0])
+        else:
+            reply = route.fetch()
+            replies.append(reply.text())
+            route.fulfill(response=reply)
+
+    page.route("**/api/auth/challenge", challenge)
+    open_page(page, url)
+    challenge_in_hand(page)
+    page.click("#connect")
+    expect(page.locator("#who")).to_have_text("test.near")
+    page.click("#signout")
+    expect(page.locator("#connect")).to_be_visible()
+    challenge_in_hand(page, 2)
+    page.click("#connect")  # a valid signature over a used nonce: the server says no
+    expect(page.locator("#mine-out")).to_contain_text("already used")
+    expect(page.locator("#who")).to_be_hidden()
+    challenge_in_hand(page, 3)  # the page got a new one for the next tap
+    page.click("#connect")
+    expect(page.locator("#who")).to_have_text("test.near")
+    _, (first, replayed, third) = sign_in_log(page)
+    assert replayed["nonce"] == first["nonce"] != third["nonce"]
+    assert third["inTap"] is True
+    assert (third["sentAtTap"], third["sentAtCall"]) == (3, 3)
 
 
 def seed_incidents(con):
